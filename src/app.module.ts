@@ -14,6 +14,7 @@ import { ALL_ROUTES } from './logging/routes.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { UsersModule } from './users/users.module.js';
 import { WebhooksModule } from './webhooks/webhooks.module.js';
+import { ResourceModule } from './resource/resource.module';
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { WebhooksModule } from './webhooks/webhooks.module.js';
     PrismaModule,
     UsersModule,
     WebhooksModule,
+    ResourceModule,
   ],
   controllers: [AppController],
   providers: [
