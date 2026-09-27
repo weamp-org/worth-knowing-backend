@@ -13,11 +13,54 @@ enum UserRole {
   ADMIN
 }
 
+enum ResourceType {
+  ARTICLE
+  BOOK
+  COURSE
+  VIDEO
+  PODCAST
+  PLAYLIST
+  TOOL
+  RESEARCH_PAPER
+  DATASET
+  WEBSITE
+  OTHER
+}
+
+enum AccessType {
+  FREE
+  PAID
+  FREEMIUM
+  UNKNOWN
+}
+
 model User {
-  id       String @id
+  id       String  @id
   name     String
-  email    String @unique
+  email    String  @unique
   imageUrl String?
 
   role UserRole @default(USER)
+
+  resources Resource[]
+}
+
+model Resource {
+  id         String       @id @default(cuid())
+  title      String       @db.VarChar(200)
+  url        String
+  type       ResourceType
+  accessType AccessType   @default(UNKNOWN)
+  why        String
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  /// Set to NULL when the contributor's account is deleted, so their
+  /// contributions survive without being attributable.
+  contributorId String?
+  contributor   User?   @relation(fields: [contributorId], references: [id], onDelete: SetNull)
+
+  @@index([contributorId])
+  @@index([createdAt])
+  @@index([type, createdAt])
 }

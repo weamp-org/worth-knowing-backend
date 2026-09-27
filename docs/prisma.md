@@ -27,11 +27,54 @@ enum UserRole {
   ADMIN
 }
 
+enum ResourceType {
+  ARTICLE
+  BOOK
+  COURSE
+  VIDEO
+  PODCAST
+  PLAYLIST
+  TOOL
+  RESEARCH_PAPER
+  DATASET
+  WEBSITE
+  OTHER
+}
+
+enum AccessType {
+  FREE
+  PAID
+  FREEMIUM
+  UNKNOWN
+}
+
 model User {
-  id    String   @id
-  name  String
-  email String   @unique
-  role  UserRole @default(USER)
+  id       String  @id
+  name     String
+  email    String  @unique
+  imageUrl String?
+
+  role UserRole @default(USER)
+
+  resources Resource[]
+}
+
+model Resource {
+  id         String       @id @default(cuid())
+  title      String       @db.VarChar(200)
+  url        String
+  type       ResourceType
+  accessType AccessType   @default(UNKNOWN)
+  why        String
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  contributorId String?
+  contributor   User?   @relation(fields: [contributorId], references: [id], onDelete: SetNull)
+
+  @@index([contributorId])
+  @@index([createdAt])
+  @@index([type, createdAt])
 }
 ```
 
@@ -40,6 +83,42 @@ model User {
 - Model names: **PascalCase, singular** (`User`, not `users`)
 - Field names: **camelCase** (`createdAt`, not `created_at`)
 - Enum names: **PascalCase** (`UserRole`, not `USER_ROLE`)
+- Enum _values_: **SCREAMING_SNAKE_CASE** (`RESEARCH_PAPER`)
+- Directories and files are **plural** (`src/resources/resources.service.ts`)
+
+### Identifiers
+
+`User.id` **is** the Clerk user ID and has no default — there is no local ID
+mapping. Every other model generates its own, so `Resource` uses
+`@default(cuid())`. Resource is the first model here to do so; match it on new
+models rather than matching `User`.
+
+### The contributor relation
+
+`Resource.contributorId` is **nullable** with `onDelete: SetNull`. This is
+deliberate and load-bearing:
+
+- `src/webhooks/webhooks.service.ts` handles Clerk's `user.deleted` event by
+  hard-deleting the local `User` row. The default `Restrict` behaviour would
+  raise a foreign key violation there, the webhook would return 400, and the
+  user row would leak permanently.
+- `SetNull` keeps a deleted contributor's resources intact and only drops the
+  attribution, so reads must tolerate `contributor: null`.
+- `Cascade` is ruled out: it would silently destroy curated content.
+
+The alternative — a `deletedAt` column on `User` (soft delete) — was considered
+and deferred. It preserves `contributorId` indefinitely, but every future `User`
+query would then have to filter `deletedAt: null`, and the deleted user's PII
+would be retained. Revisit if attribution-after-deletion ever becomes a
+requirement. Note that once `SetNull` has nulled a row, the original Clerk ID
+cannot be recovered.
+
+### Indexing
+
+`Resource` carries three indexes. A btree on the low-cardinality `type` enum
+alone is close to useless, so the load-bearing one is the composite with
+`createdAt`, which serves "latest resources of type X". Index the queries you
+actually write, not every column.
 
 ### Schema changes
 

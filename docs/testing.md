@@ -208,3 +208,42 @@ it('GET /api/v1', () => {
 - Always call `await app.close()` in `afterAll` to clean up
 - Override any provider that makes external connections (database, Clerk API)
 - Set up the global prefix in tests if the app uses one, or the routes will 404
+- The global `ValidationPipe` is registered in `main.ts`, not `AppModule`, so an
+  e2e app that should exercise DTO validation must opt in:
+  `app.useGlobalPipes(new ValidationPipe(validationPipeOptions))`. The options
+  live in `src/validation.ts` and are shared with `main.ts` so the two cannot
+  drift.
+
+### Mocking Clerk in e2e
+
+Clerk's `getAuth` requires a request whose `auth` property is a function
+_branded_ by `clerkMiddleware()`, which only `main.ts` registers. You cannot
+fake that from a test — setting `req.auth` to a plain object or function still
+makes `getAuth` throw, which surfaces as a 500 rather than the 401 you are
+trying to assert.
+
+Mock the module instead, the same way `src/clerk-auth/clerk-auth.guard.spec.ts`
+does:
+
+```ts
+jest.mock('@clerk/express', () => ({
+  getAuth: jest.fn(),
+  clerkClient: { users: { getUser: jest.fn() } },
+}));
+```
+
+Then drive the session from a header:
+
+```ts
+(getAuth as jest.Mock).mockImplementation(
+  (req: { header?: (name: string) => string | undefined }) => ({
+    userId: req.header?.('x-test-user-id') ?? null,
+  }),
+);
+```
+
+This keeps e2e tests free of Clerk keys and network access, and lets you assert
+both sides of a guard — 401 when the header is absent, and the success path when
+it is present. Remember that `RolesGuard` looks the role up through
+`prisma.user.findUnique`, so the `PrismaService` override has to answer that
+call too if the route is role-restricted.

@@ -10,16 +10,29 @@ Edit `prisma/schema.prisma`:
 
 ```prisma
 model Post {
-  id        String   @id @default(cuid())
-  title     String
-  content   String?
-  published Boolean  @default(false)
-  authorId  String
-  author    User     @relation(fields: [authorId], references: [id])
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id            String   @id @default(cuid())
+  title         String
+  content       String?
+  published     Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  contributorId String?
+  contributor   User?    @relation(fields: [contributorId], references: [id], onDelete: SetNull)
+
+  @@index([contributorId])
+  @@index([createdAt])
 }
 ```
+
+Name the relation **`contributor`**, not `author`. The person who shares a
+resource is not its author, and `authorId` on a resource reads as "who wrote
+this book". AGENTS.md uses _contributor_ throughout for this reason.
+
+Make `contributorId` **nullable** with `onDelete: SetNull` rather than a plain
+required relation. The `user.deleted` webhook hard-deletes the local `User` row,
+so a required foreign key would raise a constraint violation there and leak the
+row. See `docs/prisma.md` for the full reasoning.
 
 Run the migration and regenerate the client:
 
@@ -118,15 +131,26 @@ export class CreatePostDto {
   @IsBoolean()
   @IsOptional()
   published?: boolean;
-
-  /** The Clerk ID of the contributing user
-   * @example 'user_123'
-   */
-  @IsString()
-  @IsNotEmpty()
-  authorId: string;
 }
 ```
+
+**Do not put the contributor in the DTO.** Never accept a contributor (or
+author, or user) id from the request body — a client could then attribute a
+resource to anyone. Read it from the authenticated session instead and pass it
+to the service separately:
+
+```ts
+@Post()
+create(
+  @CurrentUserId() contributorId: string,
+  @Body() createPostDto: CreatePostDto,
+) {
+  return this.postsService.create(createPostDto, contributorId);
+}
+```
+
+`CurrentUserId` lives in `src/clerk-auth/current-user.decorator.ts` and is only
+usable on routes behind `ClerkAuthGuard`.
 
 Remember that the global `ValidationPipe` uses `whitelist: true` **and**
 `forbidNonWhitelisted: true`. A property without a `class-validator`
