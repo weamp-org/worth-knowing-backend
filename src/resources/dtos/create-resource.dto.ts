@@ -39,8 +39,7 @@ export class CreateResourceDto {
   @IsEnum(ResourceType)
   type: ResourceType;
 
-  /** Whether the resource is free, paid, or freemium. Defaults to UNKNOWN
-   * when the contributor is not sure.
+  /** Whether the resource is free, paid, or freemium. Omit when unsure and it defaults to UNKNOWN.
    * @example 'FREE'
    */
   @IsOptional()
