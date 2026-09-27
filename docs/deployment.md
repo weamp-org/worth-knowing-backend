@@ -52,7 +52,7 @@ pnpm start:prod
 If you ship a prebuilt `dist/` (and already-generated Prisma client) into a
 runtime-only image, you can then install production dependencies only with
 `pnpm install --frozen-lockfile --prod --ignore-scripts`. Do not use `--prod`
-before `prisma generate` or `pnpm build` in this template. `--ignore-scripts`
+before `prisma generate` or `pnpm build` in this project. `--ignore-scripts`
 skips the root `postinstall` (`prisma generate`), which would fail without the
 Prisma CLI from `devDependencies`.
 
@@ -60,7 +60,7 @@ Prisma CLI from `devDependencies`.
 
 ## Platform notes
 
-This template is **platform-agnostic**. It compiles to plain JavaScript in `dist/` and runs as a standard Node.js process. Deploy anywhere that supports Node.js 24:
+This project is **platform-agnostic**. It compiles to plain JavaScript in `dist/` and runs as a standard Node.js process. Deploy anywhere that supports Node.js 24:
 
 - **Railway / Render / Fly.io** — Set build command to `pnpm build` and start command to `pnpm start:prod`
 - **AWS ECS / Fargate** — Build into a Docker image, set entrypoint to `node dist/src/main`
@@ -92,7 +92,16 @@ CMD ["node", "dist/src/main"]
 GET /api/v1
 ```
 
-Returns `200 OK` with `Hello World!`. Use this as your health check endpoint.
+Returns `200 OK` with:
+
+```json
+{
+  "status": "ok",
+  "service": "worth-knowing-api"
+}
+```
+
+Use this as your health check endpoint.
 
 ---
 

@@ -1,13 +1,13 @@
-# NestJS Template
+# Worth Knowing Backend
 
-A production-ready [NestJS](https://nestjs.com/) 11 backend template with Clerk authentication, Prisma ORM, role-based access control, and pre-commit lint-staged hooks.
+NestJS 11 API for Worth Knowing, with Clerk authentication, Prisma ORM, role-based access control, and pre-commit lint-staged hooks.
 
 ## Features
 
 - **Authentication** — Clerk-powered via `@clerk/express` with global middleware, configurable guards, and auto-provisioning of local user records on first sign-in
 - **Authorization** — Role-based access control with `@Roles()` decorator and `RolesGuard` (`USER` / `ADMIN` roles)
 - **Database** — Prisma v7 with PostgreSQL via `@prisma/adapter-pg`, auto-generated typed client, migration workflow
-- **REST API** — Global `/api/v1` prefix, full CRUD scaffold for users, `ValidationPipe` with whitelist/transform (with implicit conversion)
+- **REST API** — Global `/api/v1` prefix, users CRUD scaffold, `ValidationPipe` with whitelist/transform (with implicit conversion)
 - **Webhooks** — Clerk webhook handler for `user.created` / `user.updated` / `user.deleted` events with signature verification
 - **Rate Limiting** — `@nestjs/throttler`, 100 requests/min per user
 - **Logging** — Structured JSON logging with `nestjs-pino`, request/response auto-logging, request ID propagation, sensitive header redaction, and a global exception filter
@@ -60,7 +60,7 @@ services:
   postgres:
     image: postgres:18
     environment:
-      POSTGRES_DB: nestjs-template
+      POSTGRES_DB: worth_knowing
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     secrets:
       - postgres_password
@@ -75,18 +75,32 @@ secrets:
 | File                                    | Purpose                                 |
 | --------------------------------------- | --------------------------------------- |
 | `secrets/postgres_password.txt`         | Actual PostgreSQL password (gitignored) |
-| `secrets/postgres_password.txt.example` | Template with a placeholder value       |
+| `secrets/postgres_password.txt.example` | Example with a placeholder value        |
 
 1. Copy the example to create your secret file: `cp secrets/postgres_password.txt.example secrets/postgres_password.txt`
 2. Edit the password to your desired value
-3. Ensure the `DATABASE_URL` in `.env.local` uses the same password — e.g. `postgresql://postgres:your-password-here@localhost:5432/nestjs-template`
+3. Ensure the `DATABASE_URL` in `.env.local` uses the same password — e.g. `postgresql://postgres:your-password-here@localhost:5432/worth_knowing`
 
 > **Note:** The `secrets/` directory is gitignored. Only the `*.example` file is tracked in version control.
+
+### Existing Postgres volumes
+
+`POSTGRES_DB` is only applied when the data volume is first initialized. If you previously ran Compose with a different database name (for example `nestjs-template`), renaming to `worth_knowing` does not migrate that data automatically, and `pg_isready` can still succeed even when the new database is missing.
+
+For a clean local reset (destroys local DB data):
+
+```bash
+docker compose down -v
+docker compose up -d
+pnpm prisma migrate dev
+```
+
+To keep existing data instead, create or rename the database inside the running Postgres container so it matches `DATABASE_URL`, then point `.env.local` at that name.
 
 ## Project structure
 
 ```text
-nestjs-template/
+worth-knowing-backend/
 ├── compose.yaml                    # Docker Compose (PostgreSQL 18)
 ├── prisma.config.ts                # Prisma config (dotenv + defineConfig)
 ├── prisma/
@@ -95,7 +109,7 @@ nestjs-template/
 ├── src/
 │   ├── main.ts                     # Entry point (global prefix, Clerk, CORS, Swagger, ValidationPipe)
 │   ├── app.module.ts               # Root module (imports all features)
-│   ├── app.controller.ts           # Root controller (GET /api/v1)
+│   ├── app.controller.ts           # Root controller (GET /api/v1 health)
 │   ├── app.service.ts              # Root service
 │   ├── clerk-auth/
 │   │   └── clerk-auth.guard.ts     # Clerk authentication guard
@@ -132,16 +146,16 @@ nestjs-template/
 
 ## Configuration
 
-The template uses two env files loaded in order: `.env.local` (local overrides, gitignored) then `.env` (shared defaults, gitignored). Copy the example file to get started:
+The project uses two env files loaded in order: `.env.local` (local overrides, gitignored) then `.env` (shared defaults, gitignored). Copy the example file to get started:
 
-| Variable                       | Required | Default                 | Description                                                                                         |
-| ------------------------------ | -------- | ----------------------- | --------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`                 | Yes      | —                       | PostgreSQL connection string (e.g. `postgresql://postgres:postgres@localhost:5432/nestjs-template`) |
-| `CLERK_PUBLISHABLE_KEY`        | Yes      | —                       | Clerk publishable API key                                                                           |
-| `CLERK_SECRET_KEY`             | Yes      | —                       | Clerk secret API key                                                                                |
-| `CLERK_WEBHOOK_SIGNING_SECRET` | No       | —                       | Clerk webhook signing secret (required for webhook verification)                                    |
-| `FRONTEND_BASE_URL`            | No       | `http://localhost:3001` | Allowed CORS origin                                                                                 |
-| `PORT`                         | No       | `3000`                  | Application port                                                                                    |
+| Variable                       | Required | Default                 | Description                                                                                       |
+| ------------------------------ | -------- | ----------------------- | ------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                 | Yes      | —                       | PostgreSQL connection string (e.g. `postgresql://postgres:postgres@localhost:5432/worth_knowing`) |
+| `CLERK_PUBLISHABLE_KEY`        | Yes      | —                       | Clerk publishable API key                                                                         |
+| `CLERK_SECRET_KEY`             | Yes      | —                       | Clerk secret API key                                                                              |
+| `CLERK_WEBHOOK_SIGNING_SECRET` | No       | —                       | Clerk webhook signing secret (required for webhook verification)                                  |
+| `FRONTEND_BASE_URL`            | No       | `http://localhost:3001` | Allowed CORS origin                                                                               |
+| `PORT`                         | No       | `3000`                  | Application port                                                                                  |
 
 ## Scripts
 
@@ -168,9 +182,9 @@ All endpoints are prefixed with `/api/v1`.
 
 | Method   | Path              | Auth                   | Description          |
 | -------- | ----------------- | ---------------------- | -------------------- |
-| `GET`    | `/`               | Public                 | Health check         |
-| `GET`    | `/users`          | Public                 | List all users       |
-| `GET`    | `/users/:id`      | Public                 | Get user by ID       |
+| `GET`    | `/`               | Public                 | Service health       |
+| `GET`    | `/users`          | Authenticated          | List all users       |
+| `GET`    | `/users/:id`      | Authenticated          | Get user by ID       |
 | `POST`   | `/users`          | Authenticated          | Create a user        |
 | `PATCH`  | `/users/:id`      | Authenticated          | Update a user        |
 | `DELETE` | `/users/:id`      | Admin only             | Delete a user        |
@@ -178,7 +192,7 @@ All endpoints are prefixed with `/api/v1`.
 
 ## Auth model
 
-The template implements a layered auth strategy:
+Worth Knowing implements a layered auth strategy:
 
 1. **Global middleware** — `clerkMiddleware()` from `@clerk/express` runs on every request, parsing the session JWT and attaching user identity to `req.auth`
 2. **Guard layer** — `ClerkAuthGuard` on controllers rejects unauthenticated requests. It also **auto-provisions** a local `User` record on first sign-in: if the Clerk user ID isn't in your database, it fetches the user from the Clerk API and inserts them

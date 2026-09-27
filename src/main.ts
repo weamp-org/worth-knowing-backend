@@ -37,8 +37,8 @@ async function bootstrap() {
 
   if (!isProduction) {
     const config = new DocumentBuilder()
-      .setTitle('NestJS Template')
-      .setDescription('API documentation for NestJS Template')
+      .setTitle('Worth Knowing API')
+      .setDescription('API documentation for Worth Knowing')
       .setVersion('1.0.0')
       .addBearerAuth()
       .build();

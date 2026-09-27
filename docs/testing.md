@@ -2,7 +2,7 @@
 
 ## Overview
 
-The template uses [Jest](https://jestjs.io/) for both unit tests (`*.spec.ts`) and e2e tests (`*.e2e-spec.ts`). Unit tests use `ts-jest` to compile TypeScript; e2e tests use a separate Jest config.
+The project uses [Jest](https://jestjs.io/) for both unit tests (`*.spec.ts`) and e2e tests (`*.e2e-spec.ts`). Unit tests use `ts-jest` to compile TypeScript; e2e tests use a separate Jest config.
 
 ---
 
@@ -196,10 +196,10 @@ Use Supertest for HTTP assertions:
 
 ```ts
 it('GET /api/v1', () => {
-  return request(app.getHttpServer())
-    .get('/api/v1')
-    .expect(200)
-    .expect('Hello World!');
+  return request(app.getHttpServer()).get('/api/v1').expect(200).expect({
+    status: 'ok',
+    service: 'worth-knowing-api',
+  });
 });
 ```
 

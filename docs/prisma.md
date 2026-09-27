@@ -2,7 +2,7 @@
 
 ## Overview
 
-The template uses [Prisma v7](https://www.prisma.io/) as the database ORM with PostgreSQL. Key design decisions:
+The project uses [Prisma v7](https://www.prisma.io/) as the database ORM with PostgreSQL. Key design decisions:
 
 - **`@prisma/adapter-pg`** — Uses Prisma's driver adapter for the `pg` Node.js driver instead of the built-in query engine. This is Prisma v7's recommended approach for new projects.
 - **`moduleFormat = "cjs"`** — The generated client uses CommonJS because NestJS runs on a CJS toolchain and `nodenext` module resolution in TypeScript requires explicit `.js` extensions for ESM imports.
