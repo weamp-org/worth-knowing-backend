@@ -79,6 +79,38 @@ describe('TagsService', () => {
       },
     );
 
+    // Regression: the allowlist used to be ASCII-only, so combining marks were
+    // swallowed and "Café" silently became "caf" with no error at all.
+    it('keeps accented tags intact rather than mangling them', () => {
+      expect(service.normalizeTags(['Café', 'naïve'])).toEqual([
+        { name: 'Café', slug: 'cafe' },
+        { name: 'naïve', slug: 'naive' },
+      ]);
+    });
+
+    it('blames the character set for ordinary punctuation', () => {
+      expect(() => service.normalizeTags(['!!!'])).toThrow(
+        /2-40 Latin letters/,
+      );
+    });
+
+    it('explains an unsupported script rather than calling it malformed', () => {
+      expect(() => service.normalizeTags(['日本語'])).toThrow(
+        /script that cannot be turned into a tag URL/i,
+      );
+    });
+
+    it('does not blame the character set for an unsupported script', () => {
+      let message = '';
+      try {
+        service.normalizeTags(['日本語']);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message).not.toMatch(/2-40 Latin letters/);
+    });
+
     it(`rejects more than ${MAX_TAGS_PER_RESOURCE} tags`, () => {
       const tooMany = Array.from(
         { length: MAX_TAGS_PER_RESOURCE + 1 },

@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   TAG_SLUG_MAX_LENGTH,
   TAG_SLUG_MIN_LENGTH,
+  isUnsupportedScript,
   isValidTagSlug,
   slugifyTag,
 } from './slugify.util';
@@ -19,6 +20,21 @@ export const MAX_TAGS_PER_RESOURCE = 5;
 
 /** Upper bound on rows returned by {@link TagsService.search}. */
 const SEARCH_RESULT_LIMIT = 20;
+
+/**
+ * Why a tag name was rejected.
+ *
+ * Scripts with no Latin decomposition get their own message, because telling
+ * someone that `日本語` is not "2-40 letters" when it plainly is would be
+ * nonsense. Accent folding is handled, so `café` is fine.
+ */
+function unusableTagMessage(name: string): string {
+  if (isUnsupportedScript(name)) {
+    return `"${name}" uses a script that cannot be turned into a tag URL yet. Try a Latin-script alternative.`;
+  }
+
+  return `"${name}" is not a usable tag. Use ${TAG_SLUG_MIN_LENGTH}-${TAG_SLUG_MAX_LENGTH} Latin letters, digits, or the characters . + # -`;
+}
 
 @Injectable()
 export class TagsService {
@@ -49,9 +65,7 @@ export class TagsService {
       const slug = slugifyTag(name);
 
       if (!isValidTagSlug(slug)) {
-        throw new BadRequestException(
-          `"${name}" is not a usable tag. Use ${TAG_SLUG_MIN_LENGTH}-${TAG_SLUG_MAX_LENGTH} letters, digits, or the characters . + # -`,
-        );
+        throw new BadRequestException(unusableTagMessage(name));
       }
 
       if (!bySlug.has(slug)) {

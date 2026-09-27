@@ -151,13 +151,41 @@ want later.
   `"Machine Learning"` and `"machine-learning"` onto one tag for free, so the
   most common duplicate spelling cannot exist.
 
+`slugifyTag` folds with **NFKD and strips combining marks** before applying the
+allowlist. This matters: an ASCII-only allowlist silently ate the accents, so
+`Café` became `caf` and `naïve` became `na-ve` — valid slugs, wrong data, no
+error. It also folds full-width forms (`Ｆｕｌｌ` → `full`) and collapses
+`Café`/`cafe`/`CAFÉ` onto one tag.
+
+NFKD does **not** transliterate scripts with no Latin decomposition, so Cyrillic,
+Greek and CJK normalize to nothing and are rejected. `isUnsupportedScript`
+distinguishes that from ordinary punctuation so the error can say so honestly
+("uses a script that cannot be turned into a tag URL yet") rather than telling
+someone that `日本語` is not "2-40 letters". Adding transliteration is a
+deliberate follow-up, not an oversight.
+
 Because `#` is kept in the slug, `C#` does not collapse into `c` and collide
 with the C language tag — but a `#` in a URL path segment starts the fragment,
 so **tag URLs must be built with `encodeURIComponent`** (`/tags/c%23`).
 
 `TagsService.normalizeTags` is where the policy lives: it rejects unnormalizable
 names, caps the count, and dedupes by slug. `slugifyTag` itself stays pure and
-never throws. Tags are created implicitly on resource write via
+never throws.
+
+### Granting ADMIN
+
+`UserRole` has **no write path in the API** — no endpoint can change a role, so
+promotion is not reachable over HTTP. That is deliberate, but it also means the
+first admin has to be promoted out of band:
+
+```bash
+pnpm user:set-role <clerk-user-id> ADMIN   # or USER to demote
+```
+
+The script (`scripts/user-set-role.sh`) runs through `prisma db execute`, so it
+needs no TypeScript runtime, and it validates the Clerk ID against
+`^user_[A-Za-z0-9]+$` before it reaches the query. Note that `prisma db execute`
+reports success even when no row matched, so confirm the change landed. Tags are created implicitly on resource write via
 `createMany({ skipDuplicates: true })` — there is deliberately no
 `POST /api/v1/tags`, so a tag can never exist without being attached to
 something.

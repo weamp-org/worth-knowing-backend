@@ -29,16 +29,17 @@ pnpm start:dev
 
 ## Commands
 
-| Command             | Description                           |
-| ------------------- | ------------------------------------- |
-| `pnpm start:dev`    | Dev server on port 3000               |
-| `pnpm build`        | Compile to `dist/`                    |
-| `pnpm lint`         | ESLint (typescript-eslint + prettier) |
-| `pnpm format`       | Prettier write                        |
-| `pnpm format:check` | Prettier check                        |
-| `pnpm typecheck`    | `tsc --noEmit`                        |
-| `pnpm test`         | Jest unit tests (`*.spec.ts`)         |
-| `pnpm test:e2e`     | Supertest e2e tests                   |
+| Command                                    | Description                                                                       |
+| ------------------------------------------ | --------------------------------------------------------------------------------- |
+| `pnpm start:dev`                           | Dev server on port 3000                                                           |
+| `pnpm build`                               | Compile to `dist/`                                                                |
+| `pnpm lint`                                | ESLint (typescript-eslint + prettier)                                             |
+| `pnpm format`                              | Prettier write                                                                    |
+| `pnpm format:check`                        | Prettier check                                                                    |
+| `pnpm typecheck`                           | `tsc --noEmit`                                                                    |
+| `pnpm test`                                | Jest unit tests (`*.spec.ts`)                                                     |
+| `pnpm test:e2e`                            | Supertest e2e tests                                                               |
+| `pnpm user:set-role <clerk-user-id> ADMIN` | Promote/demote a local user (see [docs/prisma.md](docs/prisma.md#granting-admin)) |
 
 Run `pnpm typecheck && pnpm lint && pnpm test` before submitting changes.
 
