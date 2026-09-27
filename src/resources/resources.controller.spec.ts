@@ -65,10 +65,18 @@ describe('ResourcesController', () => {
   });
 
   describe('findAll', () => {
-    it('returns all resources', async () => {
-      await controller.findAll();
+    it('returns all resources when no filter is given', async () => {
+      await controller.findAll({});
 
-      expect(mockResourcesService.findAll).toHaveBeenCalled();
+      expect(mockResourcesService.findAll).toHaveBeenCalledWith(undefined);
+    });
+
+    it('passes the tag filter through', async () => {
+      await controller.findAll({ tag: 'machine-learning' });
+
+      expect(mockResourcesService.findAll).toHaveBeenCalledWith(
+        'machine-learning',
+      );
     });
   });
 

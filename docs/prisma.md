@@ -72,9 +72,21 @@ model Resource {
   contributorId String?
   contributor   User?   @relation(fields: [contributorId], references: [id], onDelete: SetNull)
 
+  tags Tag[]
+
   @@index([contributorId])
   @@index([createdAt])
   @@index([type, createdAt])
+}
+
+model Tag {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  resources Resource[]
 }
 ```
 
@@ -119,6 +131,55 @@ cannot be recovered.
 alone is close to useless, so the load-bearing one is the composite with
 `createdAt`, which serves "latest resources of type X". Index the queries you
 actually write, not every column.
+
+### Tags
+
+`Resource.tags` is a Prisma **implicit** many-to-many, so Prisma owns the
+`_ResourceToTag` join table. Both of its foreign keys cascade, which only
+removes join rows — deleting a `Tag` never deletes the `Resource` pointing at
+it, and vice versa. An explicit join model is only worth it if you need
+metadata on the assignment itself (who tagged it, when), which moderation might
+want later.
+
+`Tag` keeps two identifiers on purpose:
+
+- `name` is the **display form as typed** — `C++`, `Machine Learning`,
+  `node.js`. Collapsing these into a single field would be lossy on a technical
+  audience.
+- `slug` is the **normalized identity** and the only unique one. Normalizing in
+  `slugifyTag` (lowercase, spaces and disallowed runs to hyphens) collapses
+  `"Machine Learning"` and `"machine-learning"` onto one tag for free, so the
+  most common duplicate spelling cannot exist.
+
+Because `#` is kept in the slug, `C#` does not collapse into `c` and collide
+with the C language tag — but a `#` in a URL path segment starts the fragment,
+so **tag URLs must be built with `encodeURIComponent`** (`/tags/c%23`).
+
+`TagsService.normalizeTags` is where the policy lives: it rejects unnormalizable
+names, caps the count, and dedupes by slug. `slugifyTag` itself stays pure and
+never throws. Tags are created implicitly on resource write via
+`createMany({ skipDuplicates: true })` — there is deliberately no
+`POST /api/v1/tags`, so a tag can never exist without being attached to
+something.
+
+`GET /api/v1/tags?query=` backs the contributor typeahead, and an empty `query`
+returns the most-used tags so browsing the whole vocabulary needs no second
+route. It orders by usage count **in memory** rather than with a relation
+`_count` orderBy, which is not something to rely on across Prisma versions; the
+candidate set is capped at 20 regardless. The `contains`/`insensitive` filter is
+not index-backed, which is fine while the vocabulary is small.
+
+**Known follow-ups, deliberately not built yet:**
+
+- **Tag merge.** Free-form tags mean `ml` and `machine-learning` can coexist.
+  Nothing merges them today. A merge path (admin-only endpoint, or a manual SQL
+  update) is required eventually, or the vocabulary degrades irreversibly.
+- **Tag landing pages.** `GET /api/v1/tags/:name` does not exist yet. Nothing
+  in the current read path depends on it.
+- **Search indexing.** If the tag table grows enough for `contains` to matter, a
+  GIN trigram index needs `pg_trgm`, which Prisma cannot express — it has to be
+  hand-written into a migration. The same applies to full-text search over
+  `Resource.title` and `Resource.why`.
 
 ### Schema changes
 

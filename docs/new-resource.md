@@ -20,6 +20,8 @@ model Post {
   contributorId String?
   contributor   User?    @relation(fields: [contributorId], references: [id], onDelete: SetNull)
 
+  tags Tag[]
+
   @@index([contributorId])
   @@index([createdAt])
 }
@@ -33,6 +35,11 @@ Make `contributorId` **nullable** with `onDelete: SetNull` rather than a plain
 required relation. The `user.deleted` webhook hard-deletes the local `User` row,
 so a required foreign key would raise a constraint violation there and leak the
 row. See `docs/prisma.md` for the full reasoning.
+
+`tags` is an implicit many-to-many. Free-form tags need two fields — a display
+`name` and a normalized unique `slug` — and are created implicitly on resource
+write, so do not add a `POST /tags`. `docs/prisma.md` covers the normalization
+rules and the `#`-encoding caveat for tag URLs.
 
 Run the migration and regenerate the client:
 
@@ -208,6 +215,28 @@ export class PostsService {
     await this.findOne(id);
     return this.prisma.post.delete({ where: { id } });
   }
+}
+```
+
+### If the model has tags
+
+Two rules that are easy to get wrong:
+
+**Replace, don't append.** `set` replaces the whole tag set; `connect` only ever
+adds, which makes removing a tag impossible. See
+`src/resources/resources.service.ts` for the working version.
+
+**Never set tags unconditionally on update.** `UpdatePostDto` extends
+`PartialType`, so `tags` is `undefined` on any partial update that did not
+mention it. Writing `tags: { set: dto.tags }` unconditionally would silently
+strip every tag off the resource:
+
+```ts
+const { tags, ...fields } = dto;
+const data: Prisma.PostUpdateInput = { ...fields };
+
+if (tags !== undefined) {
+  data.tags = { set: tagRows.map(({ slug }) => ({ slug })) };
 }
 ```
 

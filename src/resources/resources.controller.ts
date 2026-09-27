@@ -6,12 +6,14 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 
 import { ResourcesService } from './resources.service';
 import { CreateResourceDto } from './dtos/create-resource.dto';
 import { UpdateResourceDto } from './dtos/update-resource.dto';
+import { ListResourcesQueryDto } from './dtos/list-resources-query.dto';
 import { ClerkAuthGuard } from '../clerk-auth/clerk-auth.guard';
 import { CurrentUserId } from '../clerk-auth/current-user.decorator';
 import { RolesGuard } from '../roles/roles.guard';
@@ -34,8 +36,8 @@ export class ResourcesController {
 
   @Get()
   @Public()
-  findAll() {
-    return this.resourcesService.findAll();
+  findAll(@Query() query: ListResourcesQueryDto) {
+    return this.resourcesService.findAll(query.tag);
   }
 
   @Get(':id')

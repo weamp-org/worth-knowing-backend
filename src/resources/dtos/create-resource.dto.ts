@@ -1,4 +1,6 @@
 import {
+  ArrayMaxSize,
+  IsArray,
   IsEnum,
   IsNotEmpty,
   IsOptional,
@@ -8,6 +10,8 @@ import {
 } from 'class-validator';
 
 import { AccessType, ResourceType } from '../../generated/prisma/enums';
+import { MAX_TAGS_PER_RESOURCE } from '../../tags/tags.service';
+import { TAG_SLUG_MAX_LENGTH } from '../../tags/slugify.util';
 
 export class CreateResourceDto {
   /** A short, human-readable name for the resource
@@ -50,4 +54,15 @@ export class CreateResourceDto {
   @IsNotEmpty()
   @MaxLength(5000)
   why: string;
+
+  /** Free-form tags, created on the fly if they do not exist yet
+   * @example ['Machine Learning', 'evolution']
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(MAX_TAGS_PER_RESOURCE)
+  @IsString({ each: true })
+  @IsNotEmpty({ each: true })
+  @MaxLength(TAG_SLUG_MAX_LENGTH, { each: true })
+  tags?: string[];
 }

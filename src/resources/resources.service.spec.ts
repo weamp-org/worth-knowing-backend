@@ -3,6 +3,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 
 import { ResourcesService } from './resources.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { TagsService } from '../tags/tags.service';
 import { AccessType, ResourceType } from '../generated/prisma/enums';
 import { CreateResourceDto } from './dtos/create-resource.dto';
 
@@ -25,6 +26,7 @@ describe('ResourcesService', () => {
       delete: jest.Mock;
     };
   };
+  let tags: { normalizeTags: jest.Mock; ensureTags: jest.Mock };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -42,12 +44,36 @@ describe('ResourcesService', () => {
             },
           },
         },
+        {
+          provide: TagsService,
+          useValue: {
+            normalizeTags: jest.fn().mockReturnValue([]),
+            ensureTags: jest.fn().mockResolvedValue(undefined),
+          },
+        },
       ],
     }).compile();
 
     service = module.get(ResourcesService);
     prisma = module.get(PrismaService);
+    tags = module.get(TagsService);
   });
+
+  // Typed readers for the write payloads. `expect.objectContaining` returns
+  // `any`, which trips no-unsafe-assignment once nested in an object literal.
+  const createData = (): Record<string, unknown> => {
+    const [[arg]] = prisma.resource.create.mock.calls as unknown as [
+      [{ data: Record<string, unknown> }],
+    ];
+    return arg.data;
+  };
+
+  const updateData = (): Record<string, unknown> => {
+    const [[arg]] = prisma.resource.update.mock.calls as unknown as [
+      [{ data: Record<string, unknown> }],
+    ];
+    return arg.data;
+  };
 
   it('should be defined', () => {
     expect(service).toBeDefined();
@@ -59,11 +85,7 @@ describe('ResourcesService', () => {
 
       await service.create(createDto, 'clerk_123');
 
-      expect(prisma.resource.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: { ...createDto, contributorId: 'clerk_123' },
-        }),
-      );
+      expect(createData().contributorId).toBe('clerk_123');
     });
 
     it('never accepts a contributorId from the DTO', async () => {
@@ -77,22 +99,61 @@ describe('ResourcesService', () => {
         'clerk_123',
       );
 
-      expect(prisma.resource.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: { ...createDto, contributorId: 'clerk_123' },
-        }),
+      expect(createData().contributorId).toBe('clerk_123');
+    });
+
+    it('does not put the raw tags array into the create payload', async () => {
+      prisma.resource.create.mockResolvedValue(createDto);
+
+      await service.create({ ...createDto, tags: ['Evolution'] }, 'clerk_1');
+
+      expect(createData().tags).toEqual({ connect: [] });
+    });
+
+    it('creates then connects normalized tags', async () => {
+      const tagRows = [
+        { name: 'Evolution', slug: 'evolution' },
+        { name: 'C++', slug: 'c++' },
+      ];
+      tags.normalizeTags.mockReturnValue(tagRows);
+      prisma.resource.create.mockResolvedValue(createDto);
+
+      await service.create(
+        { ...createDto, tags: ['Evolution', 'C++'] },
+        'clerk_1',
       );
+
+      expect(tags.normalizeTags).toHaveBeenCalledWith(['Evolution', 'C++']);
+      expect(tags.ensureTags).toHaveBeenCalledWith(tagRows);
+      expect(createData().tags).toEqual({
+        connect: [{ slug: 'evolution' }, { slug: 'c++' }],
+      });
     });
   });
 
   describe('findAll', () => {
-    it('returns resources newest first', async () => {
+    it('returns resources newest first with no filter', async () => {
       prisma.resource.findMany.mockResolvedValue([]);
 
       await service.findAll();
 
       expect(prisma.resource.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ orderBy: { createdAt: 'desc' } }),
+        expect.objectContaining({
+          where: undefined,
+          orderBy: { createdAt: 'desc' },
+        }),
+      );
+    });
+
+    it('filters by tag slug when given one', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll('machine-learning');
+
+      expect(prisma.resource.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { tags: { some: { slug: 'machine-learning' } } },
+        }),
       );
     });
   });
@@ -129,6 +190,36 @@ describe('ResourcesService', () => {
         }),
       );
       expect(result).toEqual({ id: 'res_1', title: 'New' });
+    });
+
+    it('replaces the whole tag set when tags are supplied', async () => {
+      tags.normalizeTags.mockReturnValue([{ name: 'AI', slug: 'ai' }]);
+      prisma.resource.findUnique.mockResolvedValue({ id: 'res_1' });
+      prisma.resource.update.mockResolvedValue({ id: 'res_1' });
+
+      await service.update('res_1', { tags: ['AI'] });
+
+      expect(updateData().tags).toEqual({ set: [{ slug: 'ai' }] });
+    });
+
+    it('leaves tags untouched when the update omits them', async () => {
+      prisma.resource.findUnique.mockResolvedValue({ id: 'res_1' });
+      prisma.resource.update.mockResolvedValue({ id: 'res_1' });
+
+      await service.update('res_1', { title: 'New' });
+
+      expect(updateData()).not.toHaveProperty('tags');
+      expect(tags.normalizeTags).not.toHaveBeenCalled();
+    });
+
+    it('clears every tag when an empty array is supplied', async () => {
+      tags.normalizeTags.mockReturnValue([]);
+      prisma.resource.findUnique.mockResolvedValue({ id: 'res_1' });
+      prisma.resource.update.mockResolvedValue({ id: 'res_1' });
+
+      await service.update('res_1', { tags: [] });
+
+      expect(updateData().tags).toEqual({ set: [] });
     });
 
     it('throws NotFoundException rather than updating a missing resource', async () => {

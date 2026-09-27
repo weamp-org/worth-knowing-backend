@@ -25,6 +25,7 @@ jest.mock('@clerk/express', () => ({
 describe('Resources (e2e)', () => {
   let app: INestApplication<App>;
   let prisma: {
+    tag: { createMany: jest.Mock };
     resource: {
       findMany: jest.Mock;
       findUnique: jest.Mock;
@@ -66,6 +67,7 @@ describe('Resources (e2e)', () => {
               Promise.resolve({ id: where.id, role: currentUserRole }),
             ),
         },
+        tag: { createMany: jest.fn().mockResolvedValue({ count: 0 }) },
         resource: {
           findMany: jest.fn().mockResolvedValue([]),
           findUnique: jest.fn().mockResolvedValue(null),
@@ -155,11 +157,10 @@ describe('Resources (e2e)', () => {
         .send(validBody)
         .expect(201);
 
-      expect(prisma.resource.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: { ...validBody, contributorId: 'clerk_123' },
-        }),
-      );
+      const [[{ data }]] = prisma.resource.create.mock.calls as unknown as [
+        [{ data: Record<string, unknown> }],
+      ];
+      expect(data).toMatchObject({ ...validBody, contributorId: 'clerk_123' });
     });
 
     it('POST leaves accessType unset when the client omits it, deferring to the schema default', async () => {
@@ -191,7 +192,12 @@ describe('Resources (e2e)', () => {
       ['an unknown type', { type: 'SCROLL' }],
       ['a missing why', { why: undefined }],
       ['an over-long title', { title: 'x'.repeat(201) }],
-      ['an undeclared field', { tags: ['history'] }],
+      ['an undeclared field', { summary: 'nope' }],
+      // Security: a client must not be able to claim authorship.
+      [
+        'a client-supplied contributorId',
+        { contributorId: 'clerk_someone_else' },
+      ],
     ])('POST rejects %s', async (_label, override) => {
       await asUser('clerk_123')
         .post('/api/v1/resources')
@@ -216,6 +222,110 @@ describe('Resources (e2e)', () => {
       expect(prisma.resource.delete).toHaveBeenCalledWith({
         where: { id: 'res_1' },
       });
+    });
+  });
+
+  describe('tag filtering', () => {
+    it('GET /api/v1/resources?tag= scopes to that tag slug', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/resources?tag=machine-learning')
+        .expect(200);
+
+      const [[{ where }]] = prisma.resource.findMany.mock.calls as unknown as [
+        [{ where: unknown }],
+      ];
+      expect(where).toEqual({ tags: { some: { slug: 'machine-learning' } } });
+    });
+
+    it('GET /api/v1/resources with no tag does not filter', async () => {
+      await request(app.getHttpServer()).get('/api/v1/resources').expect(200);
+
+      const [[{ where }]] = prisma.resource.findMany.mock.calls as unknown as [
+        [{ where: unknown }],
+      ];
+      expect(where).toBeUndefined();
+    });
+
+    it('GET /api/v1/resources?tag= rejects a value that is not a slug', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/resources?tag=Machine%20Learning')
+        .expect(400);
+    });
+
+    it('GET /api/v1/resources?tag= rejects an unknown query parameter', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/resources?type=BOOK')
+        .expect(400);
+    });
+  });
+
+  describe('tags on write', () => {
+    it('POST creates tags implicitly and connects them', async () => {
+      await asUser('clerk_123')
+        .post('/api/v1/resources')
+        .send({ ...validBody, tags: ['Machine Learning', 'C++'] })
+        .expect(201);
+
+      expect(prisma.tag.createMany).toHaveBeenCalledWith({
+        data: [
+          { name: 'Machine Learning', slug: 'machine-learning' },
+          { name: 'C++', slug: 'c++' },
+        ],
+        skipDuplicates: true,
+      });
+
+      const [[{ data }]] = prisma.resource.create.mock.calls as unknown as [
+        [{ data: Record<string, unknown> }],
+      ];
+      expect(data.tags).toEqual({
+        connect: [{ slug: 'machine-learning' }, { slug: 'c++' }],
+      });
+    });
+
+    it('POST collapses two spellings of the same tag into one', async () => {
+      await asUser('clerk_123')
+        .post('/api/v1/resources')
+        .send({ ...validBody, tags: ['Machine Learning', 'machine-learning'] })
+        .expect(201);
+
+      expect(prisma.tag.createMany).toHaveBeenCalledWith({
+        data: [{ name: 'Machine Learning', slug: 'machine-learning' }],
+        skipDuplicates: true,
+      });
+    });
+
+    it('POST succeeds with no tags at all', async () => {
+      await asUser('clerk_123')
+        .post('/api/v1/resources')
+        .send(validBody)
+        .expect(201);
+
+      expect(prisma.tag.createMany).not.toHaveBeenCalled();
+    });
+
+    it('POST rejects more than five tags', async () => {
+      await asUser('clerk_123')
+        .post('/api/v1/resources')
+        .send({
+          ...validBody,
+          tags: ['aa', 'bb', 'cc', 'dd', 'ee', 'ff'],
+        })
+        .expect(400);
+
+      expect(prisma.resource.create).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a tag with no usable characters', '!!!'],
+      ['a one-character tag', 'a'],
+      ['an over-long tag', 'a'.repeat(41)],
+    ])('POST rejects %s', async (_label, tag) => {
+      await asUser('clerk_123')
+        .post('/api/v1/resources')
+        .send({ ...validBody, tags: [tag] })
+        .expect(400);
+
+      expect(prisma.resource.create).not.toHaveBeenCalled();
     });
   });
 

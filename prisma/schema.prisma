@@ -60,7 +60,23 @@ model Resource {
   contributorId String?
   contributor   User?   @relation(fields: [contributorId], references: [id], onDelete: SetNull)
 
+  tags Tag[]
+
   @@index([contributorId])
   @@index([createdAt])
   @@index([type, createdAt])
+}
+
+/// Free-form and contributor-created. `name` is the display form as typed
+/// ("C++", "Machine Learning"); `slug` is the normalized URL-safe identity and
+/// the only unique one, so "Machine Learning" and "machine-learning" collapse
+/// into a single tag.
+model Tag {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  resources Resource[]
 }
