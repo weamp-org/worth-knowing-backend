@@ -1,9 +1,10 @@
 import { Injectable } from '@nestjs/common';
+
 import { CreateResourceDto } from './dtos/create-resource.dto';
 import { UpdateResourceDto } from './dtos/update-resource.dto';
 
 @Injectable()
-export class ResourceService {
+export class ResourcesService {
   create(createResourceDto: CreateResourceDto) {
     return 'This action adds a new resource';
   }
@@ -12,15 +13,15 @@ export class ResourceService {
     return `This action returns all resource`;
   }
 
-  findOne(id: number) {
+  findOne(id: string) {
     return `This action returns a #${id} resource`;
   }
 
-  update(id: number, updateResourceDto: UpdateResourceDto) {
+  update(id: string, updateResourceDto: UpdateResourceDto) {
     return `This action updates a #${id} resource`;
   }
 
-  remove(id: number) {
+  remove(id: string) {
     return `This action removes a #${id} resource`;
   }
 }

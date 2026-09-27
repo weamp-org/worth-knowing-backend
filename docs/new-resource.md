@@ -33,12 +33,32 @@ pnpm prisma generate
 ## 2. Scaffold the module
 
 ```bash
-nest g res posts
+pnpm exec nest g res posts --type rest --crud
 ```
 
-Choose **REST API** and **Y** to generate CRUD entry points.
+This is the non-interactive form of the generator. `--type rest` and `--crud`
+answer the two prompts the CLI would otherwise ask (transport layer, CRUD
+entry points), so it runs without any input. Omit `--crud` to scaffold a
+module with no controller. The generator registers the module in
+`src/app.module.ts` for you; add `--skip-import` to manage that by hand.
 
-This creates:
+**Naming:** pass the resource name **plural** — `nest g res posts`, not
+`nest g res post` — so the directory, files, and class names all come out
+matching the existing `users/` and `webhooks/` modules. The route is
+`@Controller('posts')`.
+
+### Post-generation cleanup
+
+The generator emits `dto/` and `entities/`, which this repo does not use —
+Prisma is the source of truth for entity shapes, and every existing module
+uses a plural `dtos/` directory. Fix both up immediately:
+
+```bash
+git mv src/posts/dto src/posts/dtos
+rm -r src/posts/entities
+```
+
+This leaves:
 
 ```text
 src/posts/
@@ -47,12 +67,22 @@ src/posts/
 ├── posts.service.ts
 ├── posts.controller.spec.ts
 ├── posts.service.spec.ts
-├── dtos/
-│   ├── create-post.dto.ts
-│   └── update-post.dto.ts
-└── entities/
-    └── post.entity.ts
+└── dtos/
+    ├── create-post.dto.ts
+    └── update-post.dto.ts
 ```
+
+Three more things the generator gets wrong relative to this repo's conventions:
+
+- The import it adds to `src/app.module.ts` **omits the `.js` extension**
+  (`./posts/posts.module`) that every other import in that file carries.
+  Add it.
+- There is no `--format` flag, so generated files are unformatted. The
+  pre-commit hook's `prettier --write` handles this, but run
+  `pnpm lint:fix` if you want it before committing.
+- The generated service ignores its DTO arguments, so `@typescript-eslint/no-unused-vars`
+  fails until the service has a real implementation (step 4). If you commit
+  the bare scaffold, use `--no-verify`.
 
 ---
 
@@ -60,41 +90,61 @@ src/posts/
 
 **`src/posts/dtos/create-post.dto.ts`**
 
+Use JSDoc comments rather than `@ApiProperty()`. `nest-cli.json` runs the
+Swagger plugin with `introspectComments: true`, so comments are converted
+into OpenAPI metadata at build time — see `src/users/dtos/create-user.dto.ts`.
+
 ```ts
 import { IsString, IsNotEmpty, IsOptional, IsBoolean } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
 
 export class CreatePostDto {
-  @ApiProperty({ example: 'My First Post' })
+  /** The post title
+   * @example 'My First Post'
+   */
   @IsString()
   @IsNotEmpty()
   title: string;
 
-  @ApiProperty({ example: 'Some content', required: false })
+  /** The post body
+   * @example 'Some content'
+   */
   @IsString()
   @IsOptional()
   content?: string;
 
-  @ApiProperty({ example: false, required: false, default: false })
+  /** Whether the post is visible to others
+   * @example false
+   */
   @IsBoolean()
   @IsOptional()
   published?: boolean;
 
-  @ApiProperty({ example: 'user_abc123' })
+  /** The Clerk ID of the contributing user
+   * @example 'user_123'
+   */
   @IsString()
   @IsNotEmpty()
   authorId: string;
 }
 ```
 
+Remember that the global `ValidationPipe` uses `whitelist: true` **and**
+`forbidNonWhitelisted: true`. A property without a `class-validator`
+decorator is rejected with a 400, so every field needs one — including
+optional ones.
+
 **`src/posts/dtos/update-post.dto.ts`**
 
 ```ts
 import { PartialType } from '@nestjs/swagger';
+
 import { CreatePostDto } from './create-post.dto';
 
 export class UpdatePostDto extends PartialType(CreatePostDto) {}
 ```
+
+Use `OmitType` when a create-only field (an author-supplied `id`, for
+instance) must not be updatable — see `src/users/dtos/update-user.dto.ts`.
 
 ---
 
