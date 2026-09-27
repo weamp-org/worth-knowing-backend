@@ -6,6 +6,7 @@ import { Logger, LoggerErrorInterceptor } from 'nestjs-pino';
 import { clerkMiddleware } from '@clerk/express';
 
 import { AppModule } from './app.module.js';
+import { validationPipeOptions } from './validation.js';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -24,16 +25,7 @@ async function bootstrap() {
   app.enableCors({ origin: frontendBaseUrl });
   app.setGlobalPrefix('api/v1');
   app.use(clerkMiddleware());
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-      transformOptions: {
-        enableImplicitConversion: true,
-      },
-    }),
-  );
+  app.useGlobalPipes(new ValidationPipe(validationPipeOptions));
 
   if (!isProduction) {
     const config = new DocumentBuilder()
@@ -44,8 +36,8 @@ async function bootstrap() {
       .build();
 
     const options = {
-      operationIdFactory: (_controllerKey: string, methodKey: string) =>
-        methodKey,
+      operationIdFactory: (controllerKey: string, methodKey: string) =>
+        `${controllerKey}_${methodKey}`,
     };
 
     const documentFactory = () =>

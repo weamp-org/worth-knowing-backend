@@ -10,16 +10,36 @@ Edit `prisma/schema.prisma`:
 
 ```prisma
 model Post {
-  id        String   @id @default(cuid())
-  title     String
-  content   String?
-  published Boolean  @default(false)
-  authorId  String
-  author    User     @relation(fields: [authorId], references: [id])
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id            String   @id @default(cuid())
+  title         String
+  content       String?
+  published     Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  contributorId String?
+  contributor   User?    @relation(fields: [contributorId], references: [id], onDelete: SetNull)
+
+  tags Tag[]
+
+  @@index([contributorId])
+  @@index([createdAt])
 }
 ```
+
+Name the relation **`contributor`**, not `author`. The person who shares a
+resource is not its author, and `authorId` on a resource reads as "who wrote
+this book". AGENTS.md uses _contributor_ throughout for this reason.
+
+Make `contributorId` **nullable** with `onDelete: SetNull` rather than a plain
+required relation. The `user.deleted` webhook hard-deletes the local `User` row,
+so a required foreign key would raise a constraint violation there and leak the
+row. See `docs/prisma.md` for the full reasoning.
+
+`tags` is an implicit many-to-many. Free-form tags need two fields — a display
+`name` and a normalized unique `slug` — and are created implicitly on resource
+write, so do not add a `POST /tags`. `docs/prisma.md` covers the normalization
+rules and the `#`-encoding caveat for tag URLs.
 
 Run the migration and regenerate the client:
 
@@ -33,12 +53,32 @@ pnpm prisma generate
 ## 2. Scaffold the module
 
 ```bash
-nest g res posts
+pnpm exec nest g res posts --type rest --crud
 ```
 
-Choose **REST API** and **Y** to generate CRUD entry points.
+This is the non-interactive form of the generator. `--type rest` and `--crud`
+answer the two prompts the CLI would otherwise ask (transport layer, CRUD
+entry points), so it runs without any input. Omit `--crud` to scaffold a
+module with no controller. The generator registers the module in
+`src/app.module.ts` for you; add `--skip-import` to manage that by hand.
 
-This creates:
+**Naming:** pass the resource name **plural** — `nest g res posts`, not
+`nest g res post` — so the directory, files, and class names all come out
+matching the existing `users/` and `webhooks/` modules. The route is
+`@Controller('posts')`.
+
+### Post-generation cleanup
+
+The generator emits `dto/` and `entities/`, which this repo does not use —
+Prisma is the source of truth for entity shapes, and every existing module
+uses a plural `dtos/` directory. Fix both up immediately:
+
+```bash
+git mv src/posts/dto src/posts/dtos
+rm -r src/posts/entities
+```
+
+This leaves:
 
 ```text
 src/posts/
@@ -47,12 +87,22 @@ src/posts/
 ├── posts.service.ts
 ├── posts.controller.spec.ts
 ├── posts.service.spec.ts
-├── dtos/
-│   ├── create-post.dto.ts
-│   └── update-post.dto.ts
-└── entities/
-    └── post.entity.ts
+└── dtos/
+    ├── create-post.dto.ts
+    └── update-post.dto.ts
 ```
+
+Three more things the generator gets wrong relative to this repo's conventions:
+
+- The import it adds to `src/app.module.ts` **omits the `.js` extension**
+  (`./posts/posts.module`) that every other import in that file carries.
+  Add it.
+- There is no `--format` flag, so generated files are unformatted. The
+  pre-commit hook's `prettier --write` handles this, but run
+  `pnpm lint:fix` if you want it before committing.
+- The generated service ignores its DTO arguments, so `@typescript-eslint/no-unused-vars`
+  fails until the service has a real implementation (step 4). If you commit
+  the bare scaffold, use `--no-verify`.
 
 ---
 
@@ -60,41 +110,72 @@ src/posts/
 
 **`src/posts/dtos/create-post.dto.ts`**
 
+Use JSDoc comments rather than `@ApiProperty()`. `nest-cli.json` runs the
+Swagger plugin with `introspectComments: true`, so comments are converted
+into OpenAPI metadata at build time — see `src/users/dtos/create-user.dto.ts`.
+
 ```ts
 import { IsString, IsNotEmpty, IsOptional, IsBoolean } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
 
 export class CreatePostDto {
-  @ApiProperty({ example: 'My First Post' })
+  /** The post title
+   * @example 'My First Post'
+   */
   @IsString()
   @IsNotEmpty()
   title: string;
 
-  @ApiProperty({ example: 'Some content', required: false })
+  /** The post body
+   * @example 'Some content'
+   */
   @IsString()
   @IsOptional()
   content?: string;
 
-  @ApiProperty({ example: false, required: false, default: false })
+  /** Whether the post is visible to others
+   * @example false
+   */
   @IsBoolean()
   @IsOptional()
   published?: boolean;
-
-  @ApiProperty({ example: 'user_abc123' })
-  @IsString()
-  @IsNotEmpty()
-  authorId: string;
 }
 ```
+
+**Do not put the contributor in the DTO.** Never accept a contributor (or
+author, or user) id from the request body — a client could then attribute a
+resource to anyone. Read it from the authenticated session instead and pass it
+to the service separately:
+
+```ts
+@Post()
+create(
+  @CurrentUserId() contributorId: string,
+  @Body() createPostDto: CreatePostDto,
+) {
+  return this.postsService.create(createPostDto, contributorId);
+}
+```
+
+`CurrentUserId` lives in `src/clerk-auth/current-user.decorator.ts` and is only
+usable on routes behind `ClerkAuthGuard`.
+
+Remember that the global `ValidationPipe` uses `whitelist: true` **and**
+`forbidNonWhitelisted: true`. A property without a `class-validator`
+decorator is rejected with a 400, so every field needs one — including
+optional ones.
 
 **`src/posts/dtos/update-post.dto.ts`**
 
 ```ts
 import { PartialType } from '@nestjs/swagger';
+
 import { CreatePostDto } from './create-post.dto';
 
 export class UpdatePostDto extends PartialType(CreatePostDto) {}
 ```
+
+Use `OmitType` when a create-only field (an author-supplied `id`, for
+instance) must not be updatable — see `src/users/dtos/update-user.dto.ts`.
 
 ---
 
@@ -134,6 +215,28 @@ export class PostsService {
     await this.findOne(id);
     return this.prisma.post.delete({ where: { id } });
   }
+}
+```
+
+### If the model has tags
+
+Two rules that are easy to get wrong:
+
+**Replace, don't append.** `set` replaces the whole tag set; `connect` only ever
+adds, which makes removing a tag impossible. See
+`src/resources/resources.service.ts` for the working version.
+
+**Never set tags unconditionally on update.** `UpdatePostDto` extends
+`PartialType`, so `tags` is `undefined` on any partial update that did not
+mention it. Writing `tags: { set: dto.tags }` unconditionally would silently
+strip every tag off the resource:
+
+```ts
+const { tags, ...fields } = dto;
+const data: Prisma.PostUpdateInput = { ...fields };
+
+if (tags !== undefined) {
+  data.tags = { set: tagRows.map(({ slug }) => ({ slug })) };
 }
 ```
 
