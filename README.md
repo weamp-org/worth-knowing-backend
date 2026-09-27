@@ -83,6 +83,20 @@ secrets:
 
 > **Note:** The `secrets/` directory is gitignored. Only the `*.example` file is tracked in version control.
 
+### Existing Postgres volumes
+
+`POSTGRES_DB` is only applied when the data volume is first initialized. If you previously ran Compose with a different database name (for example `nestjs-template`), renaming to `worth_knowing` does not migrate that data automatically, and `pg_isready` can still succeed even when the new database is missing.
+
+For a clean local reset (destroys local DB data):
+
+```bash
+docker compose down -v
+docker compose up -d
+pnpm prisma migrate dev
+```
+
+To keep existing data instead, create or rename the database inside the running Postgres container so it matches `DATABASE_URL`, then point `.env.local` at that name.
+
 ## Project structure
 
 ```text
