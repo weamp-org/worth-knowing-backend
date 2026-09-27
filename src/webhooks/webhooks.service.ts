@@ -29,19 +29,20 @@ export class WebhooksService {
       throw new Error(`Clerk user ${userClerkId} is missing an email address`);
     }
 
-    return { name, email };
+    return { name, email, imageUrl: clerkUser.imageUrl };
   }
 
   private async handleUserCreated(userClerkId: string) {
-    const { name, email } = await this.resolveClerkUser(userClerkId);
+    const { name, email, imageUrl } = await this.resolveClerkUser(userClerkId);
 
     await this.prismaService.user.upsert({
       where: { id: userClerkId },
-      update: { name, email },
+      update: { name, email, imageUrl },
       create: {
         id: userClerkId,
         name,
         email,
+        imageUrl,
       },
     });
 
@@ -49,11 +50,11 @@ export class WebhooksService {
   }
 
   private async handleUserUpdated(userClerkId: string) {
-    const { name, email } = await this.resolveClerkUser(userClerkId);
+    const { name, email, imageUrl } = await this.resolveClerkUser(userClerkId);
 
     await this.prismaService.user.update({
       where: { id: userClerkId },
-      data: { name, email },
+      data: { name, email, imageUrl },
     });
 
     this.logger.log(`User with id "${userClerkId}" has been updated`);
