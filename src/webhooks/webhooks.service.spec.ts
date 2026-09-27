@@ -46,6 +46,7 @@ describe('WebhooksService', () => {
 
   const mockClerkUser = {
     fullName: 'John Doe',
+    imageUrl: 'https://img.clerk.com/john-doe.png',
     emailAddresses: [{ emailAddress: 'john@example.com' }],
   };
 
@@ -103,11 +104,16 @@ describe('WebhooksService', () => {
 
         expect(mockUserUpsert).toHaveBeenCalledWith({
           where: { id: 'clerk_123' },
-          update: { name: 'John Doe', email: 'john@example.com' },
+          update: {
+            name: 'John Doe',
+            email: 'john@example.com',
+            imageUrl: 'https://img.clerk.com/john-doe.png',
+          },
           create: {
             id: 'clerk_123',
             name: 'John Doe',
             email: 'john@example.com',
+            imageUrl: 'https://img.clerk.com/john-doe.png',
           },
         });
         expect(sendStatus).toHaveBeenCalledWith(204);
@@ -133,6 +139,7 @@ describe('WebhooksService', () => {
           data: {
             name: 'John Doe',
             email: 'john@example.com',
+            imageUrl: 'https://img.clerk.com/john-doe.png',
           },
         });
         expect(sendStatus).toHaveBeenCalledWith(204);

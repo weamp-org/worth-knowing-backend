@@ -67,6 +67,7 @@ describe('ClerkAuthGuard', () => {
     const mockClerkUser = {
       fullName: 'John Doe',
       username: 'johndoe',
+      imageUrl: 'https://img.clerk.com/john-doe.png',
       primaryEmailAddress: { emailAddress: 'john@example.com' },
       emailAddresses: [{ emailAddress: 'john@example.com' }],
     };
@@ -87,6 +88,7 @@ describe('ClerkAuthGuard', () => {
         id: 'user_123',
         name: 'John Doe',
         email: 'john@example.com',
+        imageUrl: 'https://img.clerk.com/john-doe.png',
       },
     });
   });

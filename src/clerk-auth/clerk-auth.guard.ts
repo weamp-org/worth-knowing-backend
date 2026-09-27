@@ -61,6 +61,7 @@ export class ClerkAuthGuard implements CanActivate {
         id: clerkId,
         name,
         email,
+        imageUrl: clerkUser.imageUrl,
       },
     });
   }

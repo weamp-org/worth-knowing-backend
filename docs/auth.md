@@ -40,9 +40,13 @@ request → is @Public()? → yes → allow
        → no → fetch user from Clerk API → create local User record → allow
 ```
 
-**Auto-provisioning detail:** When a user authenticates for the first time, their Clerk user ID isn't in your database. The guard fetches the user from Clerk via `clerkClient.users.getUser(userId)`, extracts `fullName` (or `username`) and `primaryEmailAddress`, and creates a local `User` record with role `USER`. Subsequent requests hit the database directly.
+**Auto-provisioning detail:** When a user authenticates for the first time, their Clerk user ID isn't in your database. The guard fetches the user from Clerk via `clerkClient.users.getUser(userId)`, extracts `fullName` (or `username`), `primaryEmailAddress`, and the profile `imageUrl`, and creates a local `User` record with role `USER`. Subsequent requests hit the database directly.
 
 An error is thrown if the Clerk user record is missing an email address.
+
+The guard is **create-only**: once a local record exists it is never updated from this path, and no Clerk API call is made at all. Keeping Clerk-owned fields current is the webhook's job (see `docs/webhooks.md`) — `user.updated` refreshes `name`, `email`, and `imageUrl` together.
+
+`imageUrl` is nullable and is never writable through the REST API. It is Clerk-owned, exactly like `role`, so it is absent from `CreateUserDto`/`UpdateUserDto` — sending `imageUrl` in a request body is rejected with a 400 by the global `ValidationPipe` (`forbidNonWhitelisted: true`). Rows created outside a Clerk sync (for example via `POST /users`) therefore have `imageUrl = null`, and pre-existing rows are backfilled on the user's next `user.updated` event.
 
 ---
 

@@ -49,8 +49,8 @@ Incoming webhooks are verified using `verifyWebhook` from `@clerk/express/webhoo
 case 'user.created':
   await this.prisma.user.upsert({
     where: { id: data.id },
-    create: { id: data.id, name, email },
-    update: { name, email },
+    create: { id: data.id, name, email, imageUrl },
+    update: { name, email, imageUrl },
   });
 ```
 
@@ -62,11 +62,13 @@ Upserts the user — creates if new, updates if already exists (handles retries 
 // existence check is handled in handleClerkWebhook before dispatch
 await this.prismaService.user.update({
   where: { id: userClerkId },
-  data: { name, email },
+  data: { name, email, imageUrl },
 });
 ```
 
 Only updates if the user already exists locally (the routing method checks existence before calling this handler). This prevents creating local records for Clerk users that were not auto-provisioned by `ClerkAuthGuard`.
+
+This is the only path that keeps Clerk-owned fields current. `ClerkAuthGuard` is create-only, so a profile image change reaches the database through here — Clerk emits `user.updated` when a user updates their avatar, and the new `imageUrl` is written with it. If webhooks are not wired up in an environment, stored images will go stale.
 
 #### `user.deleted`
 
