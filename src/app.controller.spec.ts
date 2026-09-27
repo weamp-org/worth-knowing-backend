@@ -26,8 +26,11 @@ describe('AppController', () => {
   });
 
   describe('root', () => {
-    it('should return "Hello World!"', () => {
-      expect(appController.getHello()).toBe('Hello World!');
+    it('should return the service health payload', () => {
+      expect(appController.getHealth()).toEqual({
+        status: 'ok',
+        service: 'worth-knowing-api',
+      });
     });
   });
 });

@@ -22,10 +22,10 @@ describe('AppController (e2e)', () => {
   });
 
   it('/api/v1 (GET)', () => {
-    return request(app.getHttpServer())
-      .get('/api/v1')
-      .expect(200)
-      .expect('Hello World!');
+    return request(app.getHttpServer()).get('/api/v1').expect(200).expect({
+      status: 'ok',
+      service: 'worth-knowing-api',
+    });
   });
 
   afterEach(async () => {
