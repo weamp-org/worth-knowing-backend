@@ -112,7 +112,8 @@ Three more things the generator gets wrong relative to this repo's conventions:
 
 Use JSDoc comments rather than `@ApiProperty()`. `nest-cli.json` runs the
 Swagger plugin with `introspectComments: true`, so comments are converted
-into OpenAPI metadata at build time — see `src/users/dtos/create-user.dto.ts`.
+into OpenAPI metadata at build time — see
+`src/resources/dtos/create-resource.dto.ts`.
 
 ```ts
 import { IsString, IsNotEmpty, IsOptional, IsBoolean } from 'class-validator';
@@ -175,7 +176,8 @@ export class UpdatePostDto extends PartialType(CreatePostDto) {}
 ```
 
 Use `OmitType` when a create-only field (an author-supplied `id`, for
-instance) must not be updatable — see `src/users/dtos/update-user.dto.ts`.
+instance) must not be updatable — see
+`src/resources/dtos/update-resource.dto.ts`.
 
 ---
 

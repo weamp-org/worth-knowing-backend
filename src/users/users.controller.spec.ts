@@ -2,8 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { Reflector } from '@nestjs/core';
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
-import { CreateUserDto } from './dtos/create-user.dto';
-import { UpdateUserDto } from './dtos/update-user.dto';
+import { UpdateMySettingsDto } from './dtos/update-my-settings.dto';
 import { RolesGuard } from '../roles/roles.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { ClerkAuthGuard } from '../clerk-auth/clerk-auth.guard';
@@ -11,10 +10,8 @@ import { ClerkAuthGuard } from '../clerk-auth/clerk-auth.guard';
 describe('UsersController', () => {
   let controller: UsersController;
   let service: {
-    create: jest.Mock;
-    findAll: jest.Mock;
-    findOne: jest.Mock;
-    update: jest.Mock;
+    findMySettings: jest.Mock;
+    updateMySettings: jest.Mock;
     remove: jest.Mock;
   };
 
@@ -25,10 +22,8 @@ describe('UsersController', () => {
         {
           provide: UsersService,
           useValue: {
-            create: jest.fn(),
-            findAll: jest.fn(),
-            findOne: jest.fn(),
-            update: jest.fn(),
+            findMySettings: jest.fn(),
+            updateMySettings: jest.fn(),
             remove: jest.fn(),
           },
         },
@@ -37,7 +32,7 @@ describe('UsersController', () => {
         { provide: Reflector, useValue: { getAllAndOverride: jest.fn() } },
         {
           provide: PrismaService,
-          useValue: { user: { findUnique: jest.fn(), create: jest.fn() } },
+          useValue: { user: { findUnique: jest.fn() } },
         },
       ],
     }).compile();
@@ -50,52 +45,25 @@ describe('UsersController', () => {
     expect(controller).toBeDefined();
   });
 
-  describe('create', () => {
-    it('delegates to service.create with the DTO', () => {
-      const dto: CreateUserDto = {
-        id: 'clerk_123',
-        email: 'john@example.com',
-        name: 'John Doe',
-      };
-      service.create.mockReturnValue('result');
+  describe('findMySettings', () => {
+    it('reads the caller id from the session, not from a param', () => {
+      service.findMySettings.mockReturnValue('result');
 
-      const result = controller.create(dto);
+      const result = controller.findMySettings('clerk_123');
 
-      expect(service.create).toHaveBeenCalledWith(dto);
+      expect(service.findMySettings).toHaveBeenCalledWith('clerk_123');
       expect(result).toBe('result');
     });
   });
 
-  describe('findAll', () => {
-    it('delegates to service.findAll', () => {
-      service.findAll.mockReturnValue('result');
+  describe('updateMySettings', () => {
+    it('passes the session id alongside the body', () => {
+      const dto: UpdateMySettingsDto = { anonymousByDefault: true };
+      service.updateMySettings.mockReturnValue('result');
 
-      const result = controller.findAll();
+      const result = controller.updateMySettings('clerk_123', dto);
 
-      expect(service.findAll).toHaveBeenCalled();
-      expect(result).toBe('result');
-    });
-  });
-
-  describe('findOne', () => {
-    it('delegates to service.findOne with the id param', () => {
-      service.findOne.mockReturnValue('result');
-
-      const result = controller.findOne('clerk_123');
-
-      expect(service.findOne).toHaveBeenCalledWith('clerk_123');
-      expect(result).toBe('result');
-    });
-  });
-
-  describe('update', () => {
-    it('delegates to service.update with id and DTO', () => {
-      const dto: UpdateUserDto = { name: 'Jane' };
-      service.update.mockReturnValue('result');
-
-      const result = controller.update('clerk_123', dto);
-
-      expect(service.update).toHaveBeenCalledWith('clerk_123', dto);
+      expect(service.updateMySettings).toHaveBeenCalledWith('clerk_123', dto);
       expect(result).toBe('result');
     });
   });
@@ -109,5 +77,20 @@ describe('UsersController', () => {
       expect(service.remove).toHaveBeenCalledWith('clerk_123');
       expect(result).toBe('result');
     });
+  });
+
+  // The template's create, list, get-one and update routes are gone. This
+  // pins that, so a re-added route is a deliberate act rather than an accident
+  // of copy-pasting the old controller back.
+  it('exposes no route for creating, listing, reading or updating a user by id', () => {
+    const methods = Object.getOwnPropertyNames(
+      UsersController.prototype,
+    ).filter((name) => name !== 'constructor');
+
+    expect(methods.sort()).toEqual([
+      'findMySettings',
+      'remove',
+      'updateMySettings',
+    ]);
   });
 });

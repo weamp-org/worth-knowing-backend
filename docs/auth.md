@@ -46,7 +46,7 @@ An error is thrown if the Clerk user record is missing an email address.
 
 The guard is **create-only**: once a local record exists it is never updated from this path, and no Clerk API call is made at all. Keeping Clerk-owned fields current is the webhook's job (see `docs/webhooks.md`) — `user.updated` refreshes `name`, `email`, and `imageUrl` together.
 
-`imageUrl` is nullable and is never writable through the REST API. It is Clerk-owned, exactly like `role`, so it is absent from `CreateUserDto`/`UpdateUserDto` — sending `imageUrl` in a request body is rejected with a 400 by the global `ValidationPipe` (`forbidNonWhitelisted: true`). Rows created outside a Clerk sync (for example via `POST /users`) therefore have `imageUrl = null`, and pre-existing rows are backfilled on the user's next `user.updated` event.
+`name`, `email` and `imageUrl` are **not writable through the REST API at all**. They are Clerk-owned, and the template's `POST /users` and `PATCH /users/:id` have been removed precisely because a local write would be reverted on the next Clerk event without warning. There is no user DTO that accepts them, so sending any of the three in a request body is rejected with a 400 by the global `ValidationPipe` (`forbidNonWhitelisted: true`). The only user-writable field is `anonymousByDefault`, via `PATCH /users/me/settings`. Pre-existing rows are backfilled on the user's next `user.updated` event.
 
 ---
 

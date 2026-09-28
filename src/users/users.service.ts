@@ -1,8 +1,7 @@
 import { Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateUserDto } from './dtos/create-user.dto';
-import { UpdateMySettingsDto, UpdateUserDto } from './dtos/update-user.dto';
+import { UpdateMySettingsDto } from './dtos/update-my-settings.dto';
 
 /** The subset of a user that is not their Clerk identity. */
 const settingsSelect = { anonymousByDefault: true } as const;
@@ -10,18 +9,6 @@ const settingsSelect = { anonymousByDefault: true } as const;
 @Injectable()
 export class UsersService {
   constructor(private readonly prisma: PrismaService) {}
-
-  async create(createUserDto: CreateUserDto) {
-    return this.prisma.user.create({ data: createUserDto });
-  }
-
-  async findAll() {
-    return this.prisma.user.findMany();
-  }
-
-  async findOne(id: string) {
-    return this.prisma.user.findUnique({ where: { id } });
-  }
 
   /**
    * The caller's own settings.
@@ -55,13 +42,6 @@ export class UsersService {
       where: { id },
       data,
       select: settingsSelect,
-    });
-  }
-
-  async update(id: string, updateUserDto: UpdateUserDto) {
-    return this.prisma.user.update({
-      where: { id },
-      data: updateUserDto,
     });
   }
 

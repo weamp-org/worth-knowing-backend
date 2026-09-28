@@ -1,28 +1,11 @@
-import { UserRole } from '../../generated/prisma/enums';
-
-export class UserResponseDto {
-  /** The Clerk user ID
-   * @example 'user_2abc'
-   */
-  id: string;
-
-  name: string;
-
-  email: string;
-
-  imageUrl: string | null;
-
-  role: UserRole;
-
-  anonymousByDefault: boolean;
-}
-
 /**
  * The caller's own preferences.
  *
- * Deliberately not the whole {@link UserResponseDto}: a settings endpoint has
- * no reason to hand back an email address, a role, or a name it did not ask
- * for.
+ * The template's `UserResponseDto` — id, name, email, imageUrl, role — is gone
+ * along with the routes that returned it. A settings endpoint has no business
+ * handing back an email address or a role that nobody asked for, and
+ * `DELETE /users/:id` describes its own return inline rather than with a DTO
+ * whose fields are all identity.
  */
 export class MySettingsDto {
   /** Whether contributions are shared anonymously unless overridden.

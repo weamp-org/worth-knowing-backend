@@ -7,9 +7,7 @@ describe('UsersService', () => {
   let service: UsersService;
   let prisma: {
     user: {
-      create: jest.Mock;
-      findMany: jest.Mock;
-      findUnique: jest.Mock;
+      findUniqueOrThrow: jest.Mock;
       update: jest.Mock;
       delete: jest.Mock;
     };
@@ -23,9 +21,7 @@ describe('UsersService', () => {
           provide: PrismaService,
           useValue: {
             user: {
-              create: jest.fn(),
-              findMany: jest.fn(),
-              findUnique: jest.fn(),
+              findUniqueOrThrow: jest.fn(),
               update: jest.fn(),
               delete: jest.fn(),
             },
@@ -42,89 +38,76 @@ describe('UsersService', () => {
     expect(service).toBeDefined();
   });
 
-  describe('create', () => {
-    it('calls prisma.user.create with the DTO', async () => {
-      const dto = {
-        id: 'clerk_123',
-        email: 'john@example.com',
-        name: 'John Doe',
-      };
-      prisma.user.create.mockResolvedValue(dto);
-
-      const result = await service.create(dto);
-
-      expect(prisma.user.create).toHaveBeenCalledWith({ data: dto });
-      expect(result).toEqual(dto);
-    });
-  });
-
-  describe('findAll', () => {
-    it('calls prisma.user.findMany and returns users', async () => {
-      const users = [
-        { id: 'clerk_123', email: 'john@example.com', name: 'John Doe' },
-      ];
-      prisma.user.findMany.mockResolvedValue(users);
-
-      const result = await service.findAll();
-
-      expect(prisma.user.findMany).toHaveBeenCalled();
-      expect(result).toEqual(users);
-    });
-  });
-
-  describe('findOne', () => {
-    it('calls prisma.user.findUnique with the id', async () => {
-      const user = {
-        id: 'clerk_123',
-        email: 'john@example.com',
-        name: 'John Doe',
-      };
-      prisma.user.findUnique.mockResolvedValue(user);
-
-      const result = await service.findOne('clerk_123');
-
-      expect(prisma.user.findUnique).toHaveBeenCalledWith({
-        where: { id: 'clerk_123' },
+  describe('findMySettings', () => {
+    it('reads only the preferences, never the identity fields', async () => {
+      prisma.user.findUniqueOrThrow.mockResolvedValue({
+        anonymousByDefault: true,
       });
-      expect(result).toEqual(user);
+
+      const result = await service.findMySettings('clerk_123');
+
+      expect(prisma.user.findUniqueOrThrow).toHaveBeenCalledWith({
+        where: { id: 'clerk_123' },
+        // A settings read must not drag back an email or a role.
+        select: { anonymousByDefault: true },
+      });
+      expect(result).toEqual({ anonymousByDefault: true });
     });
 
-    it('returns null when user is not found', async () => {
-      prisma.user.findUnique.mockResolvedValue(null);
+    it('throws when the row is missing rather than inventing a default', async () => {
+      prisma.user.findUniqueOrThrow.mockRejectedValue(new Error('Not found'));
 
-      const result = await service.findOne('nonexistent');
-
-      expect(result).toBeNull();
+      await expect(service.findMySettings('ghost')).rejects.toThrow();
     });
   });
 
-  describe('update', () => {
-    it('calls prisma.user.update with id and DTO', async () => {
-      const dto = { name: 'Jane' };
-      const updated = {
-        id: 'clerk_123',
-        email: 'john@example.com',
-        name: 'Jane',
-      };
-      prisma.user.update.mockResolvedValue(updated);
+  describe('updateMySettings', () => {
+    it('writes the preference', async () => {
+      prisma.user.update.mockResolvedValue({ anonymousByDefault: true });
 
-      const result = await service.update('clerk_123', dto);
+      const result = await service.updateMySettings('clerk_123', {
+        anonymousByDefault: true,
+      });
 
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: 'clerk_123' },
-        data: dto,
+        data: { anonymousByDefault: true },
+        select: { anonymousByDefault: true },
       });
-      expect(result).toEqual(updated);
+      expect(result).toEqual({ anonymousByDefault: true });
+    });
+
+    // Spreading an absent key would send an explicit null to a non-nullable
+    // column, which Prisma rejects.
+    it('sends nothing when the body is empty', async () => {
+      prisma.user.update.mockResolvedValue({ anonymousByDefault: false });
+
+      await service.updateMySettings('clerk_123', {});
+
+      const [[arg]] = prisma.user.update.mock.calls as unknown as [
+        [{ data: Record<string, unknown> }],
+      ];
+      expect(arg.data).toEqual({});
+    });
+
+    it('takes the id from the argument, never from the payload', async () => {
+      prisma.user.update.mockResolvedValue({ anonymousByDefault: false });
+
+      await service.updateMySettings('clerk_123', {
+        anonymousByDefault: false,
+      });
+
+      const [[arg]] = prisma.user.update.mock.calls as unknown as [
+        [{ where: { id: string }; data: Record<string, unknown> }],
+      ];
+      expect(arg.where.id).toBe('clerk_123');
+      expect(arg.data).not.toHaveProperty('id');
     });
   });
 
   describe('remove', () => {
-    it('calls prisma.user.delete with the id', async () => {
-      const user = {
-        id: 'clerk_123',
-        email: 'john@example.com',
-        name: 'John Doe',
-      };
+    it('deletes by id', async () => {
+      const user = { id: 'clerk_123' };
       prisma.user.delete.mockResolvedValue(user);
 
       const result = await service.remove('clerk_123');

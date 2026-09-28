@@ -129,11 +129,11 @@ worth-knowing-backend/
 │   │   └── prisma.service.ts       # PrismaClient with adapter-pg
 │   ├── users/
 │   │   ├── users.module.ts
-│   │   ├── users.controller.ts     # CRUD: /api/v1/users
+│   │   ├── users.controller.ts     # /api/v1/users/me/settings, DELETE /users/:id
 │   │   ├── users.service.ts
 │   │   └── dtos/
-│   │       ├── create-user.dto.ts
-│   │       └── update-user.dto.ts
+│   │       ├── update-my-settings.dto.ts
+│   │       └── user-response.dto.ts
 │   └── webhooks/
 │       ├── webhooks.module.ts
 │       ├── webhooks.controller.ts  # POST /api/v1/webhooks/clerk
@@ -181,15 +181,27 @@ The project uses two env files loaded in order: `.env.local` (local overrides, g
 
 All endpoints are prefixed with `/api/v1`.
 
-| Method   | Path              | Auth                   | Description          |
-| -------- | ----------------- | ---------------------- | -------------------- |
-| `GET`    | `/`               | Public                 | Service health       |
-| `GET`    | `/users`          | Authenticated          | List all users       |
-| `GET`    | `/users/:id`      | Authenticated          | Get user by ID       |
-| `POST`   | `/users`          | Authenticated          | Create a user        |
-| `PATCH`  | `/users/:id`      | Authenticated          | Update a user        |
-| `DELETE` | `/users/:id`      | Admin only             | Delete a user        |
-| `POST`   | `/webhooks/clerk` | Public (skip throttle) | Clerk webhook events |
+| Method   | Path                  | Auth                   | Description           |
+| -------- | --------------------- | ---------------------- | --------------------- |
+| `GET`    | `/`                   | Public                 | Service health        |
+| `GET`    | `/tags`               | Public                 | Search tags           |
+| `GET`    | `/resources`          | Public                 | List resources        |
+| `GET`    | `/resources/:id`      | Public                 | One resource          |
+| `GET`    | `/resources/:id/mine` | Authenticated          | Did you contribute it |
+| `POST`   | `/resources`          | Authenticated          | Share a resource      |
+| `PATCH`  | `/resources/:id`      | Contributor or admin   | Update a resource     |
+| `DELETE` | `/resources/:id`      | Admin only             | Delete a resource     |
+| `GET`    | `/users/me/settings`  | Authenticated          | Your own settings     |
+| `PATCH`  | `/users/me/settings`  | Authenticated          | Update your settings  |
+| `DELETE` | `/users/:id`          | Admin only             | Delete a user         |
+| `POST`   | `/webhooks/clerk`     | Public (skip throttle) | Clerk webhook events  |
+
+The template's `POST /users`, `GET /users`, `GET /users/:id` and
+`PATCH /users/:id` were removed. Users are provisioned automatically by
+`ClerkAuthGuard`, and `name`, `email` and `imageUrl` are owned by Clerk —
+`WebhooksService` overwrites all three on every Clerk event, so a local write
+would silently revert. `GET /users` also returned every signed-in caller a
+list of everyone's email addresses. See the note on `UsersController`.
 
 ## Auth model
 
