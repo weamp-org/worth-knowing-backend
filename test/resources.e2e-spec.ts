@@ -102,7 +102,7 @@ describe('Resources (e2e)', () => {
       return request(app.getHttpServer())
         .get('/api/v1/resources')
         .expect(200)
-        .expect([]);
+        .expect({ items: [], nextCursor: null });
     });
 
     it('GET /api/v1/resources/:id returns 404 when missing', () => {
@@ -222,6 +222,90 @@ describe('Resources (e2e)', () => {
       expect(prisma.resource.delete).toHaveBeenCalledWith({
         where: { id: 'res_1' },
       });
+    });
+  });
+
+  describe('pagination', () => {
+    const row = (id: string) => ({ id, createdAt: new Date() });
+
+    it('defaults to 20 rows and fetches 21 to detect a next page', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await request(app.getHttpServer()).get('/api/v1/resources').expect(200);
+
+      const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
+        [{ take: number }],
+      ];
+      expect(arg.take).toBe(21);
+    });
+
+    it('returns a nextCursor when more rows exist', async () => {
+      prisma.resource.findMany.mockResolvedValue([
+        row('a'),
+        row('b'),
+        row('c'),
+      ]);
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/resources?limit=2')
+        .expect(200);
+
+      const body = response.body as {
+        items: unknown[];
+        nextCursor: string | null;
+      };
+      expect(body.items).toHaveLength(2);
+      expect(body.nextCursor).toEqual(expect.any(String));
+    });
+
+    it('returns a null cursor on the final page', async () => {
+      prisma.resource.findMany.mockResolvedValue([row('a'), row('b')]);
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/resources?limit=2')
+        .expect(200);
+
+      expect(
+        (response.body as { nextCursor: string | null }).nextCursor,
+      ).toBeNull();
+    });
+
+    it('forwards a cursor to the query', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await request(app.getHttpServer())
+        .get('/api/v1/resources?cursor=Y2tzYWZxMmE=')
+        .expect(200);
+
+      const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
+        [{ cursor: { id: string }; skip: number }],
+      ];
+      expect(arg.cursor).toEqual({ id: 'cksafq2a' });
+      expect(arg.skip).toBe(1);
+    });
+
+    it.each([
+      ['limit=0', '?limit=0'],
+      ['limit=101', '?limit=101'],
+      ['limit=abc', '?limit=abc'],
+      ['a non-numeric cursor', '?cursor=%21%21%21'],
+    ])('rejects %s', async (_label, query) => {
+      await request(app.getHttpServer())
+        .get(`/api/v1/resources${query}`)
+        .expect(400);
+    });
+
+    it('accepts the maximum limit', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await request(app.getHttpServer())
+        .get('/api/v1/resources?limit=100')
+        .expect(200);
+
+      const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
+        [{ take: number }],
+      ];
+      expect(arg.take).toBe(101);
     });
   });
 

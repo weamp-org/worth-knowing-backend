@@ -132,6 +132,44 @@ alone is close to useless, so the load-bearing one is the composite with
 `createdAt`, which serves "latest resources of type X". Index the queries you
 actually write, not every column.
 
+The `(type, createdAt)` index covers the list endpoint's `orderBy` prefix.
+Pagination adds `id DESC` as a tiebreaker on top of that, so a cursor scan over
+the full ordering is not covered by a single index — acceptable at current scale,
+but if the list endpoint ever gets slow under load, the fix is a composite
+`(type, createdAt, id)`.
+
+### Listing and pagination
+
+`GET /api/v1/resources` is keyset-paginated and returns an object, not an array:
+
+```json
+{
+  "items": [
+    /* ResourceResponseDto */
+  ],
+  "nextCursor": "Y2tpZGEyYjM0"
+}
+```
+
+- `?limit=` defaults to 20 and is capped at 100.
+- `?cursor=` takes the previous page's `nextCursor` verbatim. It is base64url of
+  the last row's id — opaque so a client cannot hand-craft a position, and
+  url-safe so it needs no escaping.
+- Ordering is `createdAt DESC, id DESC`. The `id` tiebreaker is **load-bearing**:
+  `createdAt` is not unique, and a cursor over a non-total order silently skips
+  or repeats rows when several resources share a millisecond.
+- `nextCursor` is `null` on the last page. It is computed by fetching
+  `limit + 1` rows rather than running a `COUNT(*)`, so paging costs the same
+  regardless of table size.
+- An unknown or stale cursor returns an **empty page, not a 400**. That is
+  deliberate: a resource can be deleted between a client reading a page and
+  asking for the next, and an error toast there would be spurious.
+
+Cursor decoding rejects anything outside a loose id allowlist rather than
+pinning cuid's alphabet — a format-specific regex would silently break if the
+id generator ever changed. Prisma parameterises the query, so the check is input
+sanity, not an injection guard.
+
 ### Tags
 
 `Resource.tags` is a Prisma **implicit** many-to-many, so Prisma owns the

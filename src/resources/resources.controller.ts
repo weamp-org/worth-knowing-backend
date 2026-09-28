@@ -24,7 +24,10 @@ import { ResourcesService } from './resources.service';
 import { CreateResourceDto } from './dtos/create-resource.dto';
 import { UpdateResourceDto } from './dtos/update-resource.dto';
 import { ListResourcesQueryDto } from './dtos/list-resources-query.dto';
-import { ResourceResponseDto } from './dtos/resource-response.dto';
+import {
+  PaginatedResourcesResponseDto,
+  ResourceResponseDto,
+} from './dtos/resource-response.dto';
 import { ClerkAuthGuard } from '../clerk-auth/clerk-auth.guard';
 import { CurrentUserId } from '../clerk-auth/current-user.decorator';
 import { RolesGuard } from '../roles/roles.guard';
@@ -52,11 +55,13 @@ export class ResourcesController {
 
   @Get()
   @Public()
-  @ApiOperation({ summary: 'List resources, optionally filtered by tag' })
-  @ApiOkResponse({ type: [ResourceResponseDto] })
-  @ApiBadRequestResponse({ description: 'Invalid query parameter' })
+  @ApiOperation({
+    summary: 'List resources, newest first, optionally filtered by tag',
+  })
+  @ApiOkResponse({ type: PaginatedResourcesResponseDto })
+  @ApiBadRequestResponse({ description: 'Invalid query parameter or cursor' })
   findAll(@Query() query: ListResourcesQueryDto) {
-    return this.resourcesService.findAll(query.tag);
+    return this.resourcesService.findAll(query.tag, query.limit, query.cursor);
   }
 
   @Get(':id')
