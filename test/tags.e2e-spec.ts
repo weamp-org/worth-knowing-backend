@@ -17,7 +17,15 @@ jest.mock('@clerk/express', () => ({
 
 describe('Tags (e2e)', () => {
   let app: INestApplication<App>;
-  let prisma: { tag: { findMany: jest.Mock } };
+  let prisma: {
+    tag: {
+      findMany: jest.Mock;
+      findUnique: jest.Mock;
+      update: jest.Mock;
+      delete: jest.Mock;
+    };
+  };
+  let currentUserRole: 'USER' | 'ADMIN';
 
   const tagRow = (slug: string, resourceCount: number) => ({
     id: `id_${slug}`,
@@ -26,7 +34,16 @@ describe('Tags (e2e)', () => {
     _count: { resources: resourceCount },
   });
 
+  const asUser = (userId: string) => ({
+    patch: (url: string) =>
+      request(app.getHttpServer()).patch(url).set('x-test-user-id', userId),
+    delete: (url: string) =>
+      request(app.getHttpServer()).delete(url).set('x-test-user-id', userId),
+  });
+
   beforeEach(async () => {
+    currentUserRole = 'USER';
+
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
@@ -36,10 +53,19 @@ describe('Tags (e2e)', () => {
           findUnique: jest
             .fn()
             .mockImplementation(({ where }: { where: { id: string } }) =>
-              Promise.resolve({ id: where.id, role: 'USER' }),
+              Promise.resolve({ id: where.id, role: currentUserRole }),
             ),
         },
-        tag: { findMany: jest.fn().mockResolvedValue([]) },
+        tag: {
+          findMany: jest.fn().mockResolvedValue([]),
+          findUnique: jest.fn().mockResolvedValue(null),
+          update: jest
+            .fn()
+            .mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+              Promise.resolve({ ...tagRow('renamed', 0), ...data }),
+            ),
+          delete: jest.fn().mockResolvedValue(tagRow('orphan', 0)),
+        },
         resource: {
           findMany: jest.fn().mockResolvedValue([]),
           findUnique: jest.fn().mockResolvedValue(null),
@@ -49,7 +75,11 @@ describe('Tags (e2e)', () => {
 
     prisma = moduleFixture.get(PrismaService);
 
-    (getAuth as jest.Mock).mockImplementation(() => ({ userId: null }));
+    (getAuth as jest.Mock).mockImplementation(
+      (req: { header?: (name: string) => string | undefined }) => ({
+        userId: req.header?.('x-test-user-id') ?? null,
+      }),
+    );
 
     app = moduleFixture.createNestApplication();
     app.setGlobalPrefix('api/v1');
@@ -128,6 +158,87 @@ describe('Tags (e2e)', () => {
     await request(app.getHttpServer())
       .get('/api/v1/tags?limit=100')
       .expect(400);
+  });
+
+  describe('admin writes', () => {
+    it('PATCH /api/v1/tags/:id requires a session', async () => {
+      await request(app.getHttpServer())
+        .patch('/api/v1/tags/tag_1')
+        .send({ name: 'Machine Learning' })
+        .expect(401);
+    });
+
+    it('DELETE /api/v1/tags/:id requires a session', async () => {
+      await request(app.getHttpServer())
+        .delete('/api/v1/tags/tag_1')
+        .expect(401);
+    });
+
+    it('PATCH is forbidden for a signed-in non-admin', async () => {
+      await asUser('clerk_123')
+        .patch('/api/v1/tags/tag_1')
+        .send({ name: 'Machine Learning' })
+        .expect(403);
+
+      expect(prisma.tag.update).not.toHaveBeenCalled();
+    });
+
+    it('DELETE is forbidden for a signed-in non-admin', async () => {
+      await asUser('clerk_123').delete('/api/v1/tags/tag_1').expect(403);
+
+      expect(prisma.tag.delete).not.toHaveBeenCalled();
+    });
+
+    // The slug is the tag's identity and it lives in feed URLs other people
+    // have linked. `forbidNonWhitelisted` is on globally, so a client trying to
+    // set it gets a 400 rather than silently rewriting every existing link.
+    it('PATCH refuses a slug, so feed URLs cannot be broken', async () => {
+      currentUserRole = 'ADMIN';
+
+      await asUser('clerk_admin')
+        .patch('/api/v1/tags/tag_1')
+        .send({ name: 'Machine Learning', slug: 'ml' })
+        .expect(400);
+
+      expect(prisma.tag.update).not.toHaveBeenCalled();
+    });
+
+    it('PATCH renames the display form for an admin', async () => {
+      currentUserRole = 'ADMIN';
+
+      await asUser('clerk_admin')
+        .patch('/api/v1/tags/tag_1')
+        .send({ name: 'Machine Learning' })
+        .expect(200);
+
+      const [[arg]] = prisma.tag.update.mock.calls as unknown as [
+        [{ data: Record<string, unknown> }],
+      ];
+      expect(arg.data).toEqual({ name: 'Machine Learning' });
+    });
+
+    it('DELETE 409s while the tag is still attached', async () => {
+      currentUserRole = 'ADMIN';
+      prisma.tag.findUnique.mockResolvedValue(tagRow('ai', 7));
+
+      const response = await asUser('clerk_admin')
+        .delete('/api/v1/tags/tag_1')
+        .expect(409);
+
+      expect(prisma.tag.delete).not.toHaveBeenCalled();
+      expect(JSON.stringify(response.body)).toContain('still on 7');
+    });
+
+    it('DELETE removes an unreferenced tag', async () => {
+      currentUserRole = 'ADMIN';
+      prisma.tag.findUnique.mockResolvedValue(tagRow('orphan', 0));
+
+      await asUser('clerk_admin').delete('/api/v1/tags/tag_1').expect(200);
+
+      expect(prisma.tag.delete).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'tag_1' } }),
+      );
+    });
   });
 
   afterEach(async () => {

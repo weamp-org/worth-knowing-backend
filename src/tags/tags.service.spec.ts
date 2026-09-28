@@ -1,4 +1,8 @@
-import { BadRequestException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 
 import { MAX_TAGS_PER_RESOURCE, TagsService } from './tags.service';
@@ -7,7 +11,13 @@ import { PrismaService } from '../prisma/prisma.service';
 describe('TagsService', () => {
   let service: TagsService;
   let prisma: {
-    tag: { createMany: jest.Mock; findMany: jest.Mock };
+    tag: {
+      createMany: jest.Mock;
+      findMany: jest.Mock;
+      findUnique: jest.Mock;
+      update: jest.Mock;
+      delete: jest.Mock;
+    };
   };
 
   beforeEach(async () => {
@@ -17,7 +27,13 @@ describe('TagsService', () => {
         {
           provide: PrismaService,
           useValue: {
-            tag: { createMany: jest.fn(), findMany: jest.fn() },
+            tag: {
+              createMany: jest.fn(),
+              findMany: jest.fn(),
+              findUnique: jest.fn(),
+              update: jest.fn(),
+              delete: jest.fn(),
+            },
           },
         },
       ],
@@ -148,6 +164,103 @@ describe('TagsService', () => {
         data: tags,
         skipDuplicates: true,
       });
+    });
+  });
+
+  describe('updateName', () => {
+    it('renames the display form and leaves the slug alone', async () => {
+      prisma.tag.update.mockResolvedValue({
+        id: 'tag_1',
+        name: 'Machine Learning',
+        slug: 'machine-learning',
+        _count: { resources: 3 },
+      });
+
+      const result = await service.updateName('tag_1', 'Machine Learning');
+
+      expect(prisma.tag.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'tag_1' },
+          // The slug is the tag's identity and appears in feed URLs, so it is
+          // not part of the write. A test that let it through would make every
+          // existing `/?tag=` link 404.
+          data: { name: 'Machine Learning' },
+        }),
+      );
+      expect(result).toEqual({
+        id: 'tag_1',
+        name: 'Machine Learning',
+        slug: 'machine-learning',
+        resourceCount: 3,
+      });
+    });
+
+    // An admin must not be able to install a name the contributor path would
+    // have rejected.
+    it('rejects a name that could not be a tag name', async () => {
+      await expect(service.updateName('tag_1', 'a')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(prisma.tag.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects an unsupported script', async () => {
+      await expect(service.updateName('tag_1', '日本語')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(prisma.tag.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('remove', () => {
+    it('deletes a tag nothing is attached to', async () => {
+      prisma.tag.findUnique.mockResolvedValue({
+        id: 'tag_1',
+        name: 'New',
+        slug: 'new',
+        _count: { resources: 0 },
+      });
+      prisma.tag.delete.mockResolvedValue({
+        id: 'tag_1',
+        name: 'New',
+        slug: 'new',
+        _count: { resources: 0 },
+      });
+
+      const result = await service.remove('tag_1');
+
+      expect(prisma.tag.delete).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'tag_1' } }),
+      );
+      expect(result.resourceCount).toBe(0);
+    });
+
+    // The reason this route is not a plain cascade: one delete would strip the
+    // tag from every resource carrying it, including other people's
+    // contributions, with no way back. Same damage as the `DELETE /users/:id`
+    // route that is deliberately not built.
+    it('refuses while the tag is still attached, and says how to detach it', async () => {
+      prisma.tag.findUnique.mockResolvedValue({
+        id: 'tag_1',
+        name: 'AI',
+        slug: 'ai',
+        _count: { resources: 12 },
+      });
+
+      await expect(service.remove('tag_1')).rejects.toThrow(ConflictException);
+      await expect(service.remove('tag_1')).rejects.toThrow(
+        /still on 12 resource/,
+      );
+      expect(prisma.tag.delete).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException rather than deleting a missing tag', async () => {
+      prisma.tag.findUnique.mockResolvedValue(null);
+
+      await expect(service.remove('tag_missing')).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(prisma.tag.delete).not.toHaveBeenCalled();
     });
   });
 

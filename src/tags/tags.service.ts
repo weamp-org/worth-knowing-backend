@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -34,6 +39,23 @@ function unusableTagMessage(name: string): string {
   }
 
   return `"${name}" is not a usable tag. Use ${TAG_SLUG_MIN_LENGTH}-${TAG_SLUG_MAX_LENGTH} Latin letters, digits, or the characters . + # -`;
+}
+
+type TagWithCount = {
+  id: string;
+  name: string;
+  slug: string;
+  _count: { resources: number };
+};
+
+/**
+ * One tag, in the same shape every tag route answers with.
+ *
+ * The relation count is flattened to a plain `resourceCount` so a client can
+ * drop a single tag straight into a list from `search` without reshaping it.
+ */
+function toSearchResult({ id, name, slug, _count }: TagWithCount) {
+  return { id, name, slug, resourceCount: _count.resources };
 }
 
 @Injectable()
@@ -90,6 +112,84 @@ export class TagsService {
   }
 
   /**
+   * Renames a tag's display form.
+   *
+   * The `slug` is deliberately not updatable. It is the tag's identity and it
+   * appears in feed URLs as `/?tag=<slug>`, which other people link to. Renaming
+   * it would break every existing link, and there is no slug history to redirect
+   * from — a tag only knows the one name it was created under.
+   *
+   * So a display rename is always safe, and a slug change never is. Someone who
+   * needs a different identity needs a different tag: detach this one from the
+   * resources it is wrongly on, delete it, and add the correct one.
+   *
+   * The new name is normalized and re-validated by the same rules a
+   * contributor's tag goes through, so an admin cannot install a name that
+   * {@link normalizeTags} would have rejected.
+   */
+  async updateName(id: string, name: string) {
+    const [normalized] = this.normalizeTags([name]);
+
+    if (!normalized) {
+      throw new BadRequestException('A tag needs a name');
+    }
+
+    return (
+      this.prisma.tag
+        .update({
+          where: { id },
+          data: { name: normalized.name },
+          include: { _count: { select: { resources: true } } },
+        })
+        // Flattened to the same shape `search` returns, so a client can drop the
+        // response straight back into a list without reshaping it.
+        .then(toSearchResult)
+    );
+  }
+
+  /**
+   * Deletes a tag, but only while nothing is attached to it.
+   *
+   * An attached delete would cascade the detach across every resource carrying
+   * the tag, including resources other people contributed — one call silently
+   * rewriting N contributions, un-undoable. That is the same shape of damage as
+   * the `DELETE /users/:id` route that was deliberately never built, so this
+   * refuses instead.
+   *
+   * The supported route is to detach the tag from the offending resources with
+   * `PATCH /resources/:id` — one resource, one attributable change — and delete
+   * the tag once it is empty. This is also the only way the count can reach zero:
+   * tags are created implicitly on resource write and nothing sweeps them, so an
+   * orphan left by a deleted resource is otherwise unreachable.
+   */
+  async remove(id: string) {
+    const tag = await this.prisma.tag.findUnique({
+      where: { id },
+      include: { _count: { select: { resources: true } } },
+    });
+
+    if (!tag) throw new NotFoundException(`Tag ${id} not found`);
+
+    if (tag._count.resources > 0) {
+      throw new ConflictException(
+        `Tag ${tag.slug} is still on ${tag._count.resources} resource(s). Detach it with PATCH /resources/:id first.`,
+      );
+    }
+
+    return (
+      this.prisma.tag
+        // The count is necessarily 0 by this point — that is what the guard above
+        // established — so including it keeps the response shaped like every other
+        // tag route rather than being the one that returns a bare row.
+        .delete({
+          where: { id },
+          include: { _count: { select: { resources: true } } },
+        })
+        .then(toSearchResult)
+    );
+  }
+
+  /**
    * Backs the contributor-facing typeahead.
    *
    * An empty `query` returns the most-used tags, so browsing the whole
@@ -128,12 +228,7 @@ export class TagsService {
     });
 
     return tags
-      .map(({ id, name, slug, _count }) => ({
-        id,
-        name,
-        slug,
-        resourceCount: _count.resources,
-      }))
+      .map(toSearchResult)
       .sort((a, b) => b.resourceCount - a.resourceCount)
       .slice(0, SEARCH_RESULT_LIMIT);
   }

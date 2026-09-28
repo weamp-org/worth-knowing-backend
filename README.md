@@ -185,6 +185,8 @@ All endpoints are prefixed with `/api/v1`.
 | -------- | --------------------- | ---------------------- | --------------------- |
 | `GET`    | `/`                   | Public                 | Service health        |
 | `GET`    | `/tags`               | Public                 | Search tags           |
+| `PATCH`  | `/tags/:id`           | Admin only             | Rename a tag          |
+| `DELETE` | `/tags/:id`           | Admin only             | Delete an unused tag  |
 | `GET`    | `/resources`          | Public                 | List resources        |
 | `GET`    | `/resources/:id`      | Public                 | One resource          |
 | `GET`    | `/resources/:id/mine` | Authenticated          | Did you contribute it |
@@ -213,6 +215,31 @@ The template's `POST /users`, `GET /users`, `GET /users/:id`, `PATCH
 `UserRole.ADMIN` is still meaningful — it widens `PATCH` and `DELETE` on a
 resource from its contributor to any resource — so `pnpm user:set-role` still
 has a purpose. See the note on `UsersController`.
+
+### Tags
+
+Contributors never write tags directly. There is no `POST /tags`: a tag is
+created implicitly by `ensureTags` when a resource is written with it, so a tag
+can never exist unattached to something. `MAX_TAGS_PER_RESOURCE` is 5.
+
+`PATCH /tags/:id` renames the **display form only**. The `slug` is the tag's
+identity and it is what appears in `/?tag=<slug>` URLs, which other people link
+to; changing it would break every one of them, and a tag knows only the single
+name it was created under, so there is nothing to redirect from. `UpdateTagDto`
+has no `slug` property, and because the global `ValidationPipe` runs with
+`forbidNonWhitelisted`, a client that tries to set one gets a 400 rather than
+silently rewriting links.
+
+`DELETE /tags/:id` **refuses with a 409 while the tag is still attached to any
+resource**, and says to detach it with `PATCH /resources/:id` first. Cascading
+instead would let one call strip a tag from contributions by other people, which
+is the same un-undoable bulk damage that keeps `DELETE /users/:id` from
+existing. Two steps keeps every destructive change attributable to a single
+resource.
+
+This is also the only way a tag can ever disappear. Tags are created implicitly
+and nothing sweeps them, so a tag orphaned by a deleted resource stays in the
+vocabulary forever. That is the reason the route exists.
 
 ### Who may change a resource
 
