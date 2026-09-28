@@ -9,7 +9,6 @@ describe('UsersService', () => {
     user: {
       findUniqueOrThrow: jest.Mock;
       update: jest.Mock;
-      delete: jest.Mock;
     };
   };
 
@@ -23,7 +22,6 @@ describe('UsersService', () => {
             user: {
               findUniqueOrThrow: jest.fn(),
               update: jest.fn(),
-              delete: jest.fn(),
             },
           },
         },
@@ -102,20 +100,6 @@ describe('UsersService', () => {
       ];
       expect(arg.where.id).toBe('clerk_123');
       expect(arg.data).not.toHaveProperty('id');
-    });
-  });
-
-  describe('remove', () => {
-    it('deletes by id', async () => {
-      const user = { id: 'clerk_123' };
-      prisma.user.delete.mockResolvedValue(user);
-
-      const result = await service.remove('clerk_123');
-
-      expect(prisma.user.delete).toHaveBeenCalledWith({
-        where: { id: 'clerk_123' },
-      });
-      expect(result).toEqual(user);
     });
   });
 });

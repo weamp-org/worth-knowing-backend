@@ -129,7 +129,7 @@ worth-knowing-backend/
 │   │   └── prisma.service.ts       # PrismaClient with adapter-pg
 │   ├── users/
 │   │   ├── users.module.ts
-│   │   ├── users.controller.ts     # /api/v1/users/me/settings, DELETE /users/:id
+│   │   ├── users.controller.ts     # /api/v1/users/me/settings (only)
 │   │   ├── users.service.ts
 │   │   └── dtos/
 │   │       ├── update-my-settings.dto.ts
@@ -193,15 +193,25 @@ All endpoints are prefixed with `/api/v1`.
 | `DELETE` | `/resources/:id`      | Admin only             | Delete a resource     |
 | `GET`    | `/users/me/settings`  | Authenticated          | Your own settings     |
 | `PATCH`  | `/users/me/settings`  | Authenticated          | Update your settings  |
-| `DELETE` | `/users/:id`          | Admin only             | Delete a user         |
 | `POST`   | `/webhooks/clerk`     | Public (skip throttle) | Clerk webhook events  |
 
-The template's `POST /users`, `GET /users`, `GET /users/:id` and
-`PATCH /users/:id` were removed. Users are provisioned automatically by
-`ClerkAuthGuard`, and `name`, `email` and `imageUrl` are owned by Clerk —
-`WebhooksService` overwrites all three on every Clerk event, so a local write
-would silently revert. `GET /users` also returned every signed-in caller a
-list of everyone's email addresses. See the note on `UsersController`.
+The template's `POST /users`, `GET /users`, `GET /users/:id`, `PATCH
+/users/:id` and `DELETE /users/:id` were all removed.
+
+- Users are provisioned automatically by `ClerkAuthGuard`, so `POST /users`
+  had nobody to serve.
+- `name`, `email` and `imageUrl` are owned by Clerk — `WebhooksService`
+  overwrites all three on every Clerk event, so a local write would silently
+  revert. `GET /users` also returned every signed-in caller a list of
+  everyone's email addresses.
+- `DELETE /users/:id` is intentionally absent. It is unreachable from the
+  product and un-undoable: deleting a user sets `contributorId` to NULL on
+  every resource they contributed, permanently dropping their name from all of
+  it. Moderation should be designed with the reporting and reputation model it
+  needs, not inherited as a raw endpoint.
+
+`UserRole.ADMIN` is still used by `DELETE /resources/:id`, so
+`pnpm user:set-role` still has a purpose. See the note on `UsersController`.
 
 ## Auth model
 

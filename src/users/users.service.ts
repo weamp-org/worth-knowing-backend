@@ -44,8 +44,4 @@ export class UsersService {
       select: settingsSelect,
     });
   }
-
-  async remove(id: string) {
-    return this.prisma.user.delete({ where: { id } });
-  }
 }

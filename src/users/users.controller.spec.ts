@@ -12,7 +12,6 @@ describe('UsersController', () => {
   let service: {
     findMySettings: jest.Mock;
     updateMySettings: jest.Mock;
-    remove: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -24,7 +23,6 @@ describe('UsersController', () => {
           useValue: {
             findMySettings: jest.fn(),
             updateMySettings: jest.fn(),
-            remove: jest.fn(),
           },
         },
         RolesGuard,
@@ -69,28 +67,21 @@ describe('UsersController', () => {
   });
 
   describe('remove', () => {
-    it('delegates to service.remove with the id param', () => {
-      service.remove.mockReturnValue('result');
-
-      const result = controller.remove('clerk_123');
-
-      expect(service.remove).toHaveBeenCalledWith('clerk_123');
-      expect(result).toBe('result');
+    it('is gone, along with the rest of the template CRUD', () => {
+      expect(
+        (UsersController.prototype as { remove?: unknown }).remove,
+      ).toBeUndefined();
     });
   });
 
-  // The template's create, list, get-one and update routes are gone. This
-  // pins that, so a re-added route is a deliberate act rather than an accident
-  // of copy-pasting the old controller back.
-  it('exposes no route for creating, listing, reading or updating a user by id', () => {
+  // The template's create, list, get-one, update and delete routes are gone.
+  // This pins that, so a re-added route is a deliberate act rather than an
+  // accident of copy-pasting the old controller back.
+  it('exposes no route for creating, listing, reading, updating or deleting a user by id', () => {
     const methods = Object.getOwnPropertyNames(
       UsersController.prototype,
     ).filter((name) => name !== 'constructor');
 
-    expect(methods.sort()).toEqual([
-      'findMySettings',
-      'remove',
-      'updateMySettings',
-    ]);
+    expect(methods.sort()).toEqual(['findMySettings', 'updateMySettings']);
   });
 });
