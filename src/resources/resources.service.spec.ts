@@ -1,7 +1,9 @@
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { Prisma } from '../generated/prisma/client';
 
 import { ResourcesService } from './resources.service';
+import { encodeCursor } from './cursor.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { TagsService } from '../tags/tags.service';
 import { AccessType, ResourceType } from '../generated/prisma/enums';
@@ -132,7 +134,9 @@ describe('ResourcesService', () => {
   });
 
   describe('findAll', () => {
-    it('returns resources newest first with no filter', async () => {
+    const row = (id: string) => ({ id, createdAt: new Date() });
+
+    it('orders newest first with id as a tiebreaker', async () => {
       prisma.resource.findMany.mockResolvedValue([]);
 
       await service.findAll();
@@ -140,7 +144,7 @@ describe('ResourcesService', () => {
       expect(prisma.resource.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: undefined,
-          orderBy: { createdAt: 'desc' },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         }),
       );
     });
@@ -155,6 +159,110 @@ describe('ResourcesService', () => {
           where: { tags: { some: { slug: 'machine-learning' } } },
         }),
       );
+    });
+
+    it('defaults to 20 and fetches one extra row to detect more', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll();
+
+      expect(prisma.resource.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 21 }),
+      );
+    });
+
+    it('honours an explicit limit', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll(undefined, 5);
+
+      expect(prisma.resource.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 6 }),
+      );
+    });
+
+    it('returns a nextCursor when a further page exists', async () => {
+      prisma.resource.findMany.mockResolvedValue([
+        row('a'),
+        row('b'),
+        row('c'),
+      ]);
+
+      const result = await service.findAll(undefined, 2);
+
+      expect(result.items.map((r) => r.id)).toEqual(['a', 'b']);
+      expect(result.nextCursor).toBe(encodeCursor('b'));
+    });
+
+    it('returns a null cursor on the last page', async () => {
+      prisma.resource.findMany.mockResolvedValue([row('a'), row('b')]);
+
+      const result = await service.findAll(undefined, 2);
+
+      expect(result.items).toHaveLength(2);
+      expect(result.nextCursor).toBeNull();
+    });
+
+    it('handles an empty page without inventing a cursor', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      const result = await service.findAll();
+
+      expect(result).toEqual({ items: [], nextCursor: null });
+    });
+
+    it('passes a decoded cursor to prisma and skips the cursor row', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll(undefined, 20, encodeCursor('ckq8f2'));
+
+      expect(prisma.resource.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ cursor: { id: 'ckq8f2' }, skip: 1 }),
+      );
+    });
+
+    it('omits the cursor clause on the first page', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll();
+
+      const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
+        [Record<string, unknown>],
+      ];
+      expect(arg).not.toHaveProperty('cursor');
+      expect(arg).not.toHaveProperty('skip');
+    });
+
+    it('rejects a malformed cursor before hitting the database', async () => {
+      const cursor = Buffer.from("' OR 1=1 --", 'utf8').toString('base64url');
+
+      await expect(service.findAll(undefined, 20, cursor)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(prisma.resource.findMany).not.toHaveBeenCalled();
+    });
+
+    it('turns a cursor for a deleted row into a 400, not a 500', async () => {
+      prisma.resource.findMany.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('cursor not found', {
+          code: 'P2025',
+          clientVersion: '7.10.0',
+        }),
+      );
+
+      await expect(
+        service.findAll(undefined, 20, encodeCursor('ckq8f2')),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('does not swallow an unrelated database error', async () => {
+      const boom = new Prisma.PrismaClientKnownRequestError('deadlock', {
+        code: 'P2034',
+        clientVersion: '7.10.0',
+      });
+      prisma.resource.findMany.mockRejectedValue(boom);
+
+      await expect(service.findAll()).rejects.toBe(boom);
     });
   });
 

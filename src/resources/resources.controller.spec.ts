@@ -65,17 +65,27 @@ describe('ResourcesController', () => {
   });
 
   describe('findAll', () => {
-    it('returns all resources when no filter is given', async () => {
-      await controller.findAll({});
-
-      expect(mockResourcesService.findAll).toHaveBeenCalledWith(undefined);
-    });
-
-    it('passes the tag filter through', async () => {
-      await controller.findAll({ tag: 'machine-learning' });
+    it('forwards every pagination argument', async () => {
+      await controller.findAll({
+        tag: 'machine-learning',
+        limit: 10,
+        cursor: 'Y2tz',
+      });
 
       expect(mockResourcesService.findAll).toHaveBeenCalledWith(
         'machine-learning',
+        10,
+        'Y2tz',
+      );
+    });
+
+    it('passes undefined for absent query parameters', async () => {
+      await controller.findAll({});
+
+      expect(mockResourcesService.findAll).toHaveBeenCalledWith(
+        undefined,
+        undefined,
+        undefined,
       );
     });
   });

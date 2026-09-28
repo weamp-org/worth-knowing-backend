@@ -54,3 +54,13 @@ export class ResourceResponseDto {
 
   tags: TagSummaryDto[];
 }
+
+/** One page of `GET /api/v1/resources`. */
+export class PaginatedResourcesResponseDto {
+  items: ResourceResponseDto[];
+
+  /** Pass back as `?cursor=` to get the next page. `null` on the last page.
+   * @example 'Y2tpZGEyYjM0'
+   */
+  nextCursor: string | null;
+}
