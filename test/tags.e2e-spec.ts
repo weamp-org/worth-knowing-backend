@@ -91,7 +91,7 @@ describe('Tags (e2e)', () => {
     });
   });
 
-  it('GET /api/v1/tags?query= searches names case-insensitively', async () => {
+  it('GET /api/v1/tags?query= searches names case-insensitively and slugs by their stored form', async () => {
     await request(app.getHttpServer())
       .get('/api/v1/tags?query=machine')
       .expect(200);
@@ -100,8 +100,22 @@ describe('Tags (e2e)', () => {
       [{ where: unknown }],
     ];
     expect(where).toEqual({
-      name: { contains: 'machine', mode: 'insensitive' },
+      OR: [
+        { name: { contains: 'machine', mode: 'insensitive' } },
+        { slug: { contains: 'machine' } },
+      ],
     });
+  });
+
+  it('GET /api/v1/tags?query= lowercases the query for the slug match', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/tags?query=C%2B%2B')
+      .expect(200);
+
+    const [[{ where }]] = prisma.tag.findMany.mock.calls as unknown as [
+      [{ where: { OR: unknown[] } }],
+    ];
+    expect(where.OR).toContainEqual({ slug: { contains: 'c++' } });
   });
 
   it(`GET /api/v1/tags?query= rejects a query longer than ${TAG_SLUG_MAX_LENGTH}`, async () => {

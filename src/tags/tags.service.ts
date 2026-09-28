@@ -95,18 +95,36 @@ export class TagsService {
    * An empty `query` returns the most-used tags, so browsing the whole
    * vocabulary needs no separate route. Results are ordered by usage count in
    * memory rather than in SQL: a relation `_count` orderBy is not something to
-   * rely on across Prisma versions, and the candidate set is capped anyway.
+   * rely on across Prisma versions.
+   *
+   * The limit is applied *after* that sort, never in the query. Capping in SQL
+   * can only cap by an orderable column, so the candidate set used to be
+   * truncated by `createdAt` first and then ranked by usage — which quietly
+   * excluded the most-used tags once more than `SEARCH_RESULT_LIMIT` tags
+   * matched. Fetching the matches and slicing the ranked list costs a few more
+   * rows from a table that is small by nature, and is the only way the cap
+   * lands on the rows that were actually wanted.
+   *
+   * Matching covers `slug` as well as `name`, because a contributor who has
+   * seen `machine-learning` in a URL will type that rather than the display
+   * form. Slugs are already lowercased by {@link slugifyTag}, so the query is
+   * lowercased to match rather than asking Postgres for a case-insensitive
+   * comparison it cannot index.
    */
   async search(query?: string) {
     const trimmed = query?.trim();
 
     const tags = await this.prisma.tag.findMany({
       where: trimmed
-        ? { name: { contains: trimmed, mode: 'insensitive' } }
+        ? {
+            OR: [
+              { name: { contains: trimmed, mode: 'insensitive' } },
+              { slug: { contains: trimmed.toLowerCase() } },
+            ],
+          }
         : undefined,
       include: { _count: { select: { resources: true } } },
       orderBy: { createdAt: 'asc' },
-      take: SEARCH_RESULT_LIMIT,
     });
 
     return tags
@@ -116,6 +134,7 @@ export class TagsService {
         slug,
         resourceCount: _count.resources,
       }))
-      .sort((a, b) => b.resourceCount - a.resourceCount);
+      .sort((a, b) => b.resourceCount - a.resourceCount)
+      .slice(0, SEARCH_RESULT_LIMIT);
   }
 }

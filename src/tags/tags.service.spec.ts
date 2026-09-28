@@ -159,16 +159,35 @@ describe('TagsService', () => {
       _count: { resources: resourceCount },
     });
 
-    it('filters on name, case-insensitively', async () => {
+    it('matches on name and slug, so a URL form finds the display form', async () => {
       prisma.tag.findMany.mockResolvedValue([]);
 
-      await service.search('machine');
+      await service.search('machine-learning');
 
       expect(prisma.tag.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { name: { contains: 'machine', mode: 'insensitive' } },
+          where: {
+            OR: [
+              { name: { contains: 'machine-learning', mode: 'insensitive' } },
+              { slug: { contains: 'machine-learning' } },
+            ],
+          },
         }),
       );
+    });
+
+    it('lowercases the query for the slug match, since slugs are stored folded', async () => {
+      prisma.tag.findMany.mockResolvedValue([]);
+
+      await service.search('C++');
+
+      // Read the captured argument rather than nesting `expect` matchers, which
+      // return `any` and trip the unsafe-assignment rule.
+      const [args] = prisma.tag.findMany.mock.calls[0] as [
+        { where: { OR: unknown[] } },
+      ];
+
+      expect(args.where.OR).toContainEqual({ slug: { contains: 'c++' } });
     });
 
     it('does not filter when the query is blank', async () => {
@@ -220,14 +239,36 @@ describe('TagsService', () => {
       });
     });
 
-    it('caps the candidate set', async () => {
-      prisma.tag.findMany.mockResolvedValue([]);
-
-      await service.search('a');
-
-      expect(prisma.tag.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ take: 20 }),
+    // Regression: the limit used to be a SQL `take` ordered by `createdAt`,
+    // applied before the usage sort. With more matches than the limit, the
+    // most-used tags could be dropped before they were ever ranked.
+    it('caps after ranking by usage, not before', async () => {
+      const many = Array.from({ length: 40 }, (_, i) =>
+        tagRow(`tag-${i.toString().padStart(2, '0')}`, i),
       );
+      prisma.tag.findMany.mockResolvedValue(many);
+
+      const results = await service.search('tag');
+
+      // No SQL-level cap, or the wrong rows would be gone before ranking.
+      const [args] = prisma.tag.findMany.mock.calls[0] as [{ take?: number }];
+
+      expect(args.take).toBeUndefined();
+      expect(results).toHaveLength(20);
+    });
+
+    it('keeps the most-used matches when the candidate set is capped', async () => {
+      // Stands in for 25 matches where the heaviest were created last, which
+      // is exactly what a `take` ordered by `createdAt` would have discarded.
+      const many = Array.from({ length: 25 }, (_, i) =>
+        tagRow(`tag-${i.toString().padStart(2, '0')}`, i),
+      );
+      prisma.tag.findMany.mockResolvedValue(many);
+
+      const results = await service.search('tag');
+
+      expect(results.map((t) => t.slug)).toContain('tag-24');
+      expect(results[0]).toMatchObject({ slug: 'tag-24', resourceCount: 24 });
     });
   });
 });
