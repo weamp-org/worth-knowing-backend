@@ -42,6 +42,11 @@ model User {
 
   role UserRole @default(USER)
 
+  /// Standing preference for new contributions. Each Resource records the
+  /// resolved value at creation, so changing this later never rewrites what
+  /// has already been shared.
+  anonymousByDefault Boolean @default(false)
+
   resources Resource[]
 }
 
@@ -52,6 +57,10 @@ model Resource {
   type       ResourceType
   accessType AccessType   @default(UNKNOWN)
   why        String
+  /// When true, public responses withhold the contributor entirely. The
+  /// relation itself is kept, so the contributor can still find and edit the
+  /// resource, and it still becomes NULL if their account is deleted.
+  isAnonymous Boolean      @default(false)
   createdAt  DateTime     @default(now())
   updatedAt  DateTime     @updatedAt
 

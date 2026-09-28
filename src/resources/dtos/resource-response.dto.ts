@@ -20,7 +20,8 @@ export class TagSummaryDto {
 
 /**
  * The contributor. `null` when the contributor's account has been deleted —
- * the resource survives, the attribution does not.
+ * the resource survives, the attribution does not — or when the contribution is
+ * anonymous and the caller is not the contributor.
  */
 export class ContributorSummaryDto {
   /** The Clerk user ID
@@ -51,6 +52,17 @@ export class ResourceResponseDto {
 
   contributorId: string | null;
   contributor: ContributorSummaryDto | null;
+
+  /**
+   * Whether the contributor asked to be withheld. Both `contributor` and
+   * `contributorId` come back null when this is true, unless the caller is the
+   * contributor.
+   *
+   * Present so a client can tell an anonymous contribution apart from one whose
+   * contributor was deleted — different states, worded differently.
+   * @example true
+   */
+  isAnonymous: boolean;
 
   tags: TagSummaryDto[];
 }

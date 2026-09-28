@@ -1,5 +1,20 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { Reflector } from '@nestjs/core';
+import type { Request } from 'express';
+
+// `getAuth` throws unless Clerk's middleware has decorated the request, which
+// never happens in a unit test. Mocked so these specs stay about argument
+// forwarding rather than about Clerk's internals. The `mock` prefix is what
+// lets a `jest.mock` factory close over a module-scope variable.
+interface MockAuth {
+  userId: string | null;
+}
+
+let mockAuth: MockAuth = { userId: 'user_1' };
+
+jest.mock('@clerk/express', () => ({
+  getAuth: (): MockAuth => mockAuth,
+}));
 
 import { ResourcesController } from './resources.controller';
 import { ResourcesService } from './resources.service';
@@ -12,9 +27,12 @@ const mockResourcesService = {
   create: jest.fn(),
   findAll: jest.fn(),
   findOne: jest.fn(),
+  isMine: jest.fn(),
   update: jest.fn(),
   remove: jest.fn(),
 };
+
+const request = {} as Request;
 
 const createDto = {
   title: 'Sapiens',
@@ -28,6 +46,8 @@ describe('ResourcesController', () => {
   let controller: ResourcesController;
 
   beforeEach(async () => {
+    mockAuth = { userId: 'user_1' };
+
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ResourcesController],
       providers: [
@@ -65,24 +85,38 @@ describe('ResourcesController', () => {
   });
 
   describe('findAll', () => {
-    it('forwards every pagination argument', async () => {
-      await controller.findAll({
-        tag: 'machine-learning',
-        limit: 10,
-        cursor: 'Y2tz',
-      });
+    it('forwards every pagination argument and the viewer', async () => {
+      await controller.findAll(
+        { tag: 'machine-learning', limit: 10, cursor: 'Y2tz' },
+        request,
+      );
 
       expect(mockResourcesService.findAll).toHaveBeenCalledWith(
         'machine-learning',
         10,
         'Y2tz',
+        'user_1',
       );
     });
 
     it('passes undefined for absent query parameters', async () => {
-      await controller.findAll({});
+      await controller.findAll({}, request);
 
       expect(mockResourcesService.findAll).toHaveBeenCalledWith(
+        undefined,
+        undefined,
+        undefined,
+        'user_1',
+      );
+    });
+
+    it('forwards no viewer when the request is signed out', async () => {
+      mockAuth = { userId: null };
+
+      await controller.findAll({}, request);
+
+      expect(mockResourcesService.findAll).toHaveBeenCalledWith(
+        undefined,
         undefined,
         undefined,
         undefined,
@@ -91,20 +125,43 @@ describe('ResourcesController', () => {
   });
 
   describe('findOne', () => {
-    it('passes the id through as a string', async () => {
-      await controller.findOne('res_1');
+    it('passes the id and viewer through', async () => {
+      await controller.findOne('res_1', request);
 
-      expect(mockResourcesService.findOne).toHaveBeenCalledWith('res_1');
+      expect(mockResourcesService.findOne).toHaveBeenCalledWith(
+        'res_1',
+        'user_1',
+      );
+    });
+  });
+
+  describe('isMine', () => {
+    it('wraps the service answer', async () => {
+      mockResourcesService.isMine.mockResolvedValue(true);
+
+      await expect(controller.isMine('res_1', 'user_1')).resolves.toEqual({
+        isMine: true,
+      });
+    });
+
+    it('reports false rather than throwing', async () => {
+      mockResourcesService.isMine.mockResolvedValue(false);
+
+      await expect(controller.isMine('res_1', 'user_1')).resolves.toEqual({
+        isMine: false,
+      });
     });
   });
 
   describe('update', () => {
-    it('passes the id and DTO through', async () => {
-      await controller.update('res_1', { title: 'New' });
+    it('passes the id, DTO and caller through', async () => {
+      await controller.update('res_1', { title: 'New' }, 'user_1');
 
-      expect(mockResourcesService.update).toHaveBeenCalledWith('res_1', {
-        title: 'New',
-      });
+      expect(mockResourcesService.update).toHaveBeenCalledWith(
+        'res_1',
+        { title: 'New' },
+        'user_1',
+      );
     });
   });
 

@@ -1,6 +1,8 @@
+import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
+  IsBoolean,
   IsEnum,
   IsNotEmpty,
   IsOptional,
@@ -64,4 +66,18 @@ export class CreateResourceDto {
   @IsNotEmpty({ each: true })
   @MaxLength(TAG_SLUG_MAX_LENGTH, { each: true })
   tags?: string[];
+
+  /** Withhold the contributor from public responses. Omit to fall back to the
+   * contributor's standing preference from their settings.
+   * @example true
+   */
+  @IsOptional()
+  @IsBoolean()
+  // Without this, the global `enableImplicitConversion` turns the string
+  // "false" into `true` — because `Boolean("false")` is `true` — so a client
+  // sending a string would get the exact opposite of what it asked for. That
+  // inversion is unacceptable on a privacy flag. Widening the type stops
+  // class-transformer coercing, and `@IsBoolean` then rejects the string.
+  @Type(() => Object)
+  isAnonymous?: boolean;
 }

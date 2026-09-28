@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -36,6 +37,33 @@ type ResourceWithRelations = Prisma.ResourceGetPayload<{
 }>;
 
 /**
+ * Withholds the contributor from a resource shared anonymously.
+ *
+ * Both the `contributor` object and the raw `contributorId` go, because
+ * keeping the id would defeat the point: the same id appears on the person's
+ * public contributions, so anyone comparing two posts could link the anonymous
+ * one back to a name. Nothing is left to correlate on.
+ *
+ * The owner is not redacted from their own resource, which is what lets the
+ * edit form load and pre-fill. A stranger presenting any token is still
+ * redacted — only an exact `contributorId` match is let through.
+ *
+ * `isAnonymous` stays on the response so a client can tell an anonymous post
+ * from one whose contributor was deleted. Those are different states and the
+ * UI words them differently.
+ */
+function redactAnonymous(
+  resource: ResourceWithRelations,
+  viewerId?: string,
+): ResourceWithRelations {
+  if (!resource.isAnonymous || resource.contributorId === viewerId) {
+    return resource;
+  }
+
+  return { ...resource, contributor: null, contributorId: null };
+}
+
+/**
  * Whether a Prisma failure is a bad cursor rather than a real fault.
  *
  * In practice Prisma 7 returns an empty page for a cursor whose row is gone,
@@ -60,14 +88,21 @@ export class ResourcesService {
   ) {}
 
   async create(dto: CreateResourceDto, contributorId: string) {
-    const { tags, ...fields } = dto;
+    const { tags, isAnonymous, ...fields } = dto;
     const tagRows = this.tagsService.normalizeTags(tags);
 
     await this.tagsService.ensureTags(tagRows);
 
+    // The standing preference only applies when the client expressed no
+    // preference of its own. The resolved value is stored on the resource, so
+    // a later change to the setting cannot retroactively alter what was shared.
+    const resolvedAnonymous =
+      isAnonymous ?? (await this.anonymousByDefault(contributorId));
+
     return this.prisma.resource.create({
       data: {
         ...fields,
+        isAnonymous: resolvedAnonymous,
         contributorId,
         tags: { connect: tagRows.map(({ slug }) => ({ slug })) },
       },
@@ -76,12 +111,32 @@ export class ResourcesService {
   }
 
   /**
+   * The contributor's standing preference.
+   *
+   * Defaults to `false` when the row is missing, which can only happen if the
+   * guard has not provisioned it — better to share publicly than to fail.
+   */
+  private async anonymousByDefault(userId: string): Promise<boolean> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { anonymousByDefault: true },
+    });
+
+    return user?.anonymousByDefault ?? false;
+  }
+
+  /**
    * Keyset-paginated list, newest first.
    *
    * `take` is one over the requested page so `hasMore` can be answered without a
    * `COUNT(*)` on every request; the extra row is trimmed before returning.
    */
-  async findAll(tag?: string, limit?: number, cursor?: string) {
+  async findAll(
+    tag?: string,
+    limit?: number,
+    cursor?: string,
+    viewerId?: string,
+  ) {
     const take = limit ?? DEFAULT_PAGE_SIZE;
 
     let rows: ResourceWithRelations[];
@@ -111,12 +166,12 @@ export class ResourcesService {
     const last = items.at(-1);
 
     return {
-      items,
+      items: items.map((row) => redactAnonymous(row, viewerId)),
       nextCursor: hasMore && last ? encodeCursor(last.id) : null,
     };
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, viewerId?: string) {
     const resource = await this.prisma.resource.findUnique({
       where: { id },
       include: resourceInclude,
@@ -124,14 +179,54 @@ export class ResourcesService {
 
     if (!resource) throw new NotFoundException(`Resource ${id} not found`);
 
-    return resource;
+    return redactAnonymous(resource, viewerId);
   }
 
-  async update(id: string, dto: UpdateResourceDto) {
-    await this.findOne(id);
+  /**
+   * Whether the caller contributed this resource.
+   *
+   * Separate from the response body because a caller who cannot see the
+   * contributor still needs to know whether the resource is theirs — that is
+   * what decides whether an edit affordance is shown.
+   */
+  async isMine(id: string, viewerId: string): Promise<boolean> {
+    const resource = await this.prisma.resource.findUnique({
+      where: { id },
+      select: { contributorId: true },
+    });
+
+    return resource?.contributorId === viewerId;
+  }
+
+  async update(
+    id: string,
+    dto: UpdateResourceDto,
+    actorId: string,
+    isAdmin = false,
+  ) {
+    // Read as the actor rather than anonymously. For the owner that leaves
+    // `contributorId` populated, which is exactly what the guard below needs;
+    // reading it redacted would null that field and lock the owner out of
+    // editing their own anonymous resource.
+    const existing = await this.findOne(id, actorId);
+
+    // Without this, any signed-in user could flip `isAnonymous` on someone
+    // else's contribution and undo the one control the anonymity feature exists
+    // to provide. The local `User.id` is the Clerk user id, so the comparison
+    // is direct.
+    if (!isAdmin && existing.contributorId !== actorId) {
+      throw new ForbiddenException('You can only edit your own resources');
+    }
 
     const { tags, ...fields } = dto;
     const data: Prisma.ResourceUpdateInput = { ...fields };
+
+    // `isAnonymous` is absent from a partial update that did not mention it.
+    // Spreading `undefined` into a Prisma update is not a way to leave a column
+    // alone, so an explicit `null` is dropped here too.
+    if (data.isAnonymous === null) {
+      delete data.isAnonymous;
+    }
 
     // `tags` is absent from a partial update that did not mention it. Setting
     // it unconditionally would silently strip every tag off the resource.

@@ -30,6 +30,7 @@ describe('Resources (e2e)', () => {
       findMany: jest.Mock;
       findUnique: jest.Mock;
       create: jest.Mock;
+      update: jest.Mock;
       delete: jest.Mock;
     };
   };
@@ -46,6 +47,8 @@ describe('Resources (e2e)', () => {
   const asUser = (userId: string) => ({
     post: (url: string) =>
       request(app.getHttpServer()).post(url).set('x-test-user-id', userId),
+    get: (url: string) =>
+      request(app.getHttpServer()).get(url).set('x-test-user-id', userId),
     patch: (url: string) =>
       request(app.getHttpServer()).patch(url).set('x-test-user-id', userId),
     delete: (url: string) =>
@@ -71,6 +74,9 @@ describe('Resources (e2e)', () => {
         resource: {
           findMany: jest.fn().mockResolvedValue([]),
           findUnique: jest.fn().mockResolvedValue(null),
+          update: jest
+            .fn()
+            .mockResolvedValue({ id: 'res_1', contributor: null }),
           create: jest
             .fn()
             .mockImplementation(({ data }: { data: Record<string, unknown> }) =>
@@ -116,6 +122,7 @@ describe('Resources (e2e)', () => {
         id: 'res_1',
         ...validBody,
         contributor: null,
+        isAnonymous: false,
       });
 
       const response = await request(app.getHttpServer())
@@ -123,6 +130,167 @@ describe('Resources (e2e)', () => {
         .expect(200);
 
       expect((response.body as { id: string }).id).toBe('res_1');
+    });
+  });
+
+  describe('anonymity over HTTP', () => {
+    const anonymous = {
+      id: 'res_anon',
+      ...validBody,
+      isAnonymous: true,
+      contributorId: 'user_1',
+      contributor: { id: 'user_1', name: 'Ada Lovelace', imageUrl: null },
+    };
+
+    it('withholds the contributor from a signed-out reader', async () => {
+      prisma.resource.findUnique.mockResolvedValue(anonymous);
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/resources/res_anon')
+        .expect(200);
+
+      const body = response.body as {
+        contributor: unknown;
+        contributorId: string | null;
+        isAnonymous: boolean;
+      };
+
+      expect(body.contributor).toBeNull();
+      expect(body.contributorId).toBeNull();
+      // The client needs this to word the card: an anonymous post and a
+      // deleted contributor are different states.
+      expect(body.isAnonymous).toBe(true);
+    });
+
+    it('leaks no identifying field in the body at all', async () => {
+      prisma.resource.findUnique.mockResolvedValue(anonymous);
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/resources/res_anon')
+        .expect(200);
+
+      const raw = JSON.stringify(response.body);
+      expect(raw).not.toContain('Ada');
+      expect(raw).not.toContain('user_1');
+    });
+
+    it('shows it to the owner despite anonymity', async () => {
+      prisma.resource.findUnique.mockResolvedValue(anonymous);
+
+      const response = await asUser('user_1')
+        .get('/api/v1/resources/res_anon')
+        .expect(200);
+
+      expect(
+        (response.body as { contributorId: string | null }).contributorId,
+      ).toBe('user_1');
+    });
+
+    it('still withholds it from a signed-in stranger', async () => {
+      prisma.resource.findUnique.mockResolvedValue(anonymous);
+
+      const response = await asUser('user_other')
+        .get('/api/v1/resources/res_anon')
+        .expect(200);
+
+      expect(
+        (response.body as { contributorId: string | null }).contributorId,
+      ).toBeNull();
+    });
+
+    it('GET /api/v1/resources/:id/mine is true for the contributor', async () => {
+      prisma.resource.findUnique.mockResolvedValue({
+        contributorId: 'user_1',
+      });
+
+      const response = await asUser('user_1')
+        .get('/api/v1/resources/res_anon/mine')
+        .expect(200);
+
+      expect(response.body).toEqual({ isMine: true });
+    });
+
+    it('GET /api/v1/resources/:id/mine is false for a stranger', async () => {
+      prisma.resource.findUnique.mockResolvedValue({
+        contributorId: 'user_1',
+      });
+
+      const response = await asUser('user_other')
+        .get('/api/v1/resources/res_anon/mine')
+        .expect(200);
+
+      expect(response.body).toEqual({ isMine: false });
+    });
+
+    it('GET /api/v1/resources/:id/mine needs a session', () => {
+      return request(app.getHttpServer())
+        .get('/api/v1/resources/res_anon/mine')
+        .expect(401);
+    });
+
+    it('POST accepts isAnonymous', async () => {
+      prisma.resource.create.mockResolvedValue({
+        id: 'res_1',
+        ...validBody,
+        isAnonymous: true,
+        contributor: null,
+      });
+
+      await asUser('user_1')
+        .post('/api/v1/resources')
+        .send({ ...validBody, isAnonymous: true })
+        .expect(201);
+
+      const [[arg]] = prisma.resource.create.mock.calls as unknown as [
+        [{ data: Record<string, unknown> }],
+      ];
+      expect(arg.data.isAnonymous).toBe(true);
+    });
+
+    it('POST rejects a non-boolean isAnonymous', () => {
+      return asUser('user_1')
+        .post('/api/v1/resources')
+        .send({ ...validBody, isAnonymous: 'yes' })
+        .expect(400);
+    });
+
+    // Regression: `Boolean("false")` is `true`, so implicit conversion turned a
+    // client asking not to be anonymous into one who was. On a privacy flag the
+    // silent inversion is worse than the error.
+    it('POST does not read the string "false" as true', () => {
+      return asUser('user_1')
+        .post('/api/v1/resources')
+        .send({ ...validBody, isAnonymous: 'false' })
+        .expect(400);
+    });
+
+    it('PATCH refuses to un-anonymise somebody else’s resource', async () => {
+      prisma.resource.findUnique.mockResolvedValue(anonymous);
+
+      await asUser('user_other')
+        .patch('/api/v1/resources/res_anon')
+        .send({ isAnonymous: false })
+        .expect(403);
+
+      expect(prisma.resource.update).not.toHaveBeenCalled();
+    });
+
+    it('PATCH lets the owner un-anonymise their own resource', async () => {
+      prisma.resource.findUnique.mockResolvedValue(anonymous);
+      prisma.resource.update.mockResolvedValue({
+        id: 'res_anon',
+        isAnonymous: false,
+      });
+
+      await asUser('user_1')
+        .patch('/api/v1/resources/res_anon')
+        .send({ isAnonymous: false })
+        .expect(200);
+
+      const [[arg]] = prisma.resource.update.mock.calls as unknown as [
+        [{ data: Record<string, unknown> }],
+      ];
+      expect(arg.data.isAnonymous).toBe(false);
     });
   });
 

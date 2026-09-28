@@ -1,4 +1,8 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { Prisma } from '../generated/prisma/client';
 
@@ -27,6 +31,7 @@ describe('ResourcesService', () => {
       update: jest.Mock;
       delete: jest.Mock;
     };
+    user: { findUnique: jest.Mock };
   };
   let tags: { normalizeTags: jest.Mock; ensureTags: jest.Mock };
 
@@ -44,6 +49,7 @@ describe('ResourcesService', () => {
               update: jest.fn(),
               delete: jest.fn(),
             },
+            user: { findUnique: jest.fn().mockResolvedValue(null) },
           },
         },
         {
@@ -79,6 +85,167 @@ describe('ResourcesService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  describe('anonymity', () => {
+    const row = (over: Record<string, unknown> = {}) => ({
+      id: 'res_1',
+      title: 'Sapiens',
+      contributorId: 'user_1',
+      contributor: { id: 'user_1', name: 'Ada', imageUrl: null },
+      isAnonymous: false,
+      tags: [],
+      ...over,
+    });
+
+    describe('create', () => {
+      it('defaults to public when the contributor prefers public', async () => {
+        prisma.user.findUnique.mockResolvedValue({ anonymousByDefault: false });
+        prisma.resource.create.mockResolvedValue(createDto);
+
+        await service.create(createDto, 'user_1');
+
+        expect(createData().isAnonymous).toBe(false);
+      });
+
+      it("applies the contributor's standing preference when omitted", async () => {
+        prisma.user.findUnique.mockResolvedValue({ anonymousByDefault: true });
+        prisma.resource.create.mockResolvedValue(createDto);
+
+        await service.create(createDto, 'user_1');
+
+        expect(createData().isAnonymous).toBe(true);
+      });
+
+      it('lets the request override the standing preference', async () => {
+        prisma.user.findUnique.mockResolvedValue({ anonymousByDefault: true });
+        prisma.resource.create.mockResolvedValue(createDto);
+
+        await service.create({ ...createDto, isAnonymous: false }, 'user_1');
+
+        expect(createData().isAnonymous).toBe(false);
+        // The preference is not even consulted when the request was explicit.
+        expect(prisma.user.findUnique).not.toHaveBeenCalled();
+      });
+
+      it('shares publicly when the contributor row is missing', async () => {
+        prisma.user.findUnique.mockResolvedValue(null);
+        prisma.resource.create.mockResolvedValue(createDto);
+
+        await service.create(createDto, 'ghost');
+
+        expect(createData().isAnonymous).toBe(false);
+      });
+    });
+
+    describe('read', () => {
+      it('withholds the contributor from an anonymous resource', async () => {
+        prisma.resource.findUnique.mockResolvedValue(
+          row({ isAnonymous: true }),
+        );
+
+        const result = await service.findOne('res_1');
+
+        expect(result.contributor).toBeNull();
+        expect(result.contributorId).toBeNull();
+      });
+
+      // The whole point of hiding the id too: it is the same on that person's
+      // public contributions, so leaving it would let anyone correlate the two.
+      it('leaves nothing on an anonymous resource to correlate', async () => {
+        prisma.resource.findUnique.mockResolvedValue(
+          row({ isAnonymous: true }),
+        );
+
+        const result = await service.findOne('res_1');
+
+        expect(JSON.stringify(result)).not.toContain('user_1');
+        expect(JSON.stringify(result)).not.toContain('Ada');
+      });
+
+      it('shows the contributor to the owner despite anonymity', async () => {
+        prisma.resource.findUnique.mockResolvedValue(
+          row({ isAnonymous: true }),
+        );
+
+        const result = await service.findOne('res_1', 'user_1');
+
+        expect(result.contributorId).toBe('user_1');
+        expect(result.contributor?.name).toBe('Ada');
+      });
+
+      it('still withholds from a signed-in stranger', async () => {
+        prisma.resource.findUnique.mockResolvedValue(
+          row({ isAnonymous: true }),
+        );
+
+        const result = await service.findOne('res_1', 'someone_else');
+
+        expect(result.contributorId).toBeNull();
+      });
+
+      it('keeps isAnonymous on the response so the UI can word it', async () => {
+        prisma.resource.findUnique.mockResolvedValue(
+          row({ isAnonymous: true }),
+        );
+
+        const result = await service.findOne('res_1');
+
+        expect(result.isAnonymous).toBe(true);
+      });
+
+      it('leaves a public resource untouched', async () => {
+        prisma.resource.findUnique.mockResolvedValue(row());
+
+        const result = await service.findOne('res_1', 'stranger');
+
+        expect(result.contributorId).toBe('user_1');
+        expect(result.contributor?.name).toBe('Ada');
+      });
+
+      it('redacts every row in a page, not just the first', async () => {
+        prisma.resource.findMany.mockResolvedValue([
+          row({ id: 'a', isAnonymous: true }),
+          row({ id: 'b', isAnonymous: true }),
+        ]);
+
+        const page = await service.findAll();
+
+        expect(page.items.every((item) => item.contributorId === null)).toBe(
+          true,
+        );
+      });
+    });
+
+    describe('isMine', () => {
+      it('is true for the contributor', async () => {
+        prisma.resource.findUnique.mockResolvedValue({
+          contributorId: 'user_1',
+        });
+
+        await expect(service.isMine('res_1', 'user_1')).resolves.toBe(true);
+      });
+
+      it('is false for anyone else', async () => {
+        prisma.resource.findUnique.mockResolvedValue({
+          contributorId: 'user_1',
+        });
+
+        await expect(service.isMine('res_1', 'stranger')).resolves.toBe(false);
+      });
+
+      it('is false for a resource whose contributor was deleted', async () => {
+        prisma.resource.findUnique.mockResolvedValue({ contributorId: null });
+
+        await expect(service.isMine('res_1', 'user_1')).resolves.toBe(false);
+      });
+
+      it('is false for a resource that does not exist', async () => {
+        prisma.resource.findUnique.mockResolvedValue(null);
+
+        await expect(service.isMine('missing', 'user_1')).resolves.toBe(false);
+      });
+    });
   });
 
   describe('create', () => {
@@ -285,11 +452,18 @@ describe('ResourcesService', () => {
   });
 
   describe('update', () => {
+    /** A row the caller owns, so the ownership guard passes. */
+    const ownedBy = (userId: string) => ({
+      id: 'res_1',
+      contributorId: userId,
+      isAnonymous: false,
+    });
+
     it('updates an existing resource', async () => {
-      prisma.resource.findUnique.mockResolvedValue({ id: 'res_1' });
+      prisma.resource.findUnique.mockResolvedValue(ownedBy('user_1'));
       prisma.resource.update.mockResolvedValue({ id: 'res_1', title: 'New' });
 
-      const result = await service.update('res_1', { title: 'New' });
+      const result = await service.update('res_1', { title: 'New' }, 'user_1');
 
       expect(prisma.resource.update).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -300,32 +474,114 @@ describe('ResourcesService', () => {
       expect(result).toEqual({ id: 'res_1', title: 'New' });
     });
 
-    it('replaces the whole tag set when tags are supplied', async () => {
-      tags.normalizeTags.mockReturnValue([{ name: 'AI', slug: 'ai' }]);
-      prisma.resource.findUnique.mockResolvedValue({ id: 'res_1' });
+    // Without this, any signed-in user could flip `isAnonymous` on somebody
+    // else's contribution and undo the control anonymity exists to provide.
+    it('lets the owner edit their own anonymous resource', async () => {
+      // Regression: the guard read the row redacted, which nulls
+      // `contributorId`, so the owner was locked out of their own post. It only
+      // passes because `update` reads it *as the actor*.
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        contributorId: 'user_1',
+        isAnonymous: true,
+      });
       prisma.resource.update.mockResolvedValue({ id: 'res_1' });
 
-      await service.update('res_1', { tags: ['AI'] });
+      await service.update('res_1', { isAnonymous: false }, 'user_1');
+
+      expect(prisma.resource.update).toHaveBeenCalled();
+    });
+
+    it('still refuses an anonymous resource belonging to someone else', async () => {
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        contributorId: 'someone_else',
+        isAnonymous: true,
+      });
+
+      await expect(
+        service.update('res_1', { isAnonymous: false }, 'user_1'),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('refuses to update a resource the caller did not contribute', async () => {
+      prisma.resource.findUnique.mockResolvedValue(ownedBy('someone_else'));
+
+      await expect(
+        service.update('res_1', { title: 'Hijacked' }, 'user_1'),
+      ).rejects.toThrow(ForbiddenException);
+      expect(prisma.resource.update).not.toHaveBeenCalled();
+    });
+
+    it('lets an admin update any resource', async () => {
+      prisma.resource.findUnique.mockResolvedValue(ownedBy('someone_else'));
+      prisma.resource.update.mockResolvedValue({ id: 'res_1' });
+
+      await service.update('res_1', { title: 'Moderated' }, 'admin_1', true);
+
+      expect(prisma.resource.update).toHaveBeenCalled();
+    });
+
+    it('refuses to update a resource whose contributor was deleted', async () => {
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        contributorId: null,
+        isAnonymous: false,
+      });
+
+      await expect(
+        service.update('res_1', { title: 'New' }, 'user_1'),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('replaces the whole tag set when tags are supplied', async () => {
+      tags.normalizeTags.mockReturnValue([{ name: 'AI', slug: 'ai' }]);
+      prisma.resource.findUnique.mockResolvedValue(ownedBy('user_1'));
+      prisma.resource.update.mockResolvedValue({ id: 'res_1' });
+
+      await service.update('res_1', { tags: ['AI'] }, 'user_1');
 
       expect(updateData().tags).toEqual({ set: [{ slug: 'ai' }] });
     });
 
     it('leaves tags untouched when the update omits them', async () => {
-      prisma.resource.findUnique.mockResolvedValue({ id: 'res_1' });
+      prisma.resource.findUnique.mockResolvedValue(ownedBy('user_1'));
       prisma.resource.update.mockResolvedValue({ id: 'res_1' });
 
-      await service.update('res_1', { title: 'New' });
+      await service.update('res_1', { title: 'New' }, 'user_1');
 
       expect(updateData()).not.toHaveProperty('tags');
       expect(tags.normalizeTags).not.toHaveBeenCalled();
     });
 
-    it('clears every tag when an empty array is supplied', async () => {
-      tags.normalizeTags.mockReturnValue([]);
-      prisma.resource.findUnique.mockResolvedValue({ id: 'res_1' });
+    it('leaves isAnonymous untouched when the update omits it', async () => {
+      prisma.resource.findUnique.mockResolvedValue(ownedBy('user_1'));
       prisma.resource.update.mockResolvedValue({ id: 'res_1' });
 
-      await service.update('res_1', { tags: [] });
+      await service.update('res_1', { title: 'New' }, 'user_1');
+
+      expect(updateData().isAnonymous).toBeUndefined();
+    });
+
+    it('drops an explicit null isAnonymous rather than writing one', async () => {
+      prisma.resource.findUnique.mockResolvedValue(ownedBy('user_1'));
+      prisma.resource.update.mockResolvedValue({ id: 'res_1' });
+
+      await service.update(
+        'res_1',
+        { isAnonymous: null as unknown as boolean },
+        'user_1',
+      );
+
+      expect(updateData()).not.toHaveProperty('isAnonymous');
+    });
+
+    it('clears every tag when an empty array is supplied', async () => {
+      tags.normalizeTags.mockReturnValue([]);
+      prisma.resource.findUnique.mockResolvedValue(ownedBy('user_1'));
+      prisma.resource.update.mockResolvedValue({ id: 'res_1' });
+
+      await service.update('res_1', { tags: [] }, 'user_1');
 
       expect(updateData().tags).toEqual({ set: [] });
     });
@@ -334,7 +590,7 @@ describe('ResourcesService', () => {
       prisma.resource.findUnique.mockResolvedValue(null);
 
       await expect(
-        service.update('res_missing', { title: 'New' }),
+        service.update('res_missing', { title: 'New' }, 'user_1'),
       ).rejects.toThrow(NotFoundException);
       expect(prisma.resource.update).not.toHaveBeenCalled();
     });

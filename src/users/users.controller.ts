@@ -20,9 +20,10 @@ import {
 
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dtos/create-user.dto';
-import { UpdateUserDto } from './dtos/update-user.dto';
-import { UserResponseDto } from './dtos/user-response.dto';
+import { UpdateMySettingsDto, UpdateUserDto } from './dtos/update-user.dto';
+import { MySettingsDto, UserResponseDto } from './dtos/user-response.dto';
 import { ClerkAuthGuard } from '../clerk-auth/clerk-auth.guard';
+import { CurrentUserId } from '../clerk-auth/current-user.decorator';
 import { RolesGuard } from '../roles/roles.guard';
 import { Roles } from '../roles/roles.decorator';
 import { UserRole } from '../generated/prisma/enums';
@@ -58,11 +59,36 @@ export class UsersController {
     return this.usersService.findOne(id);
   }
 
+  // Declared ahead of `:id` so the literal path is matched, not swallowed as
+  // an id. The id always comes from the session, so there is no route by which
+  // one account can set another's settings.
+  @Get('me/settings')
+  @ApiOperation({ summary: 'Get your own settings' })
+  @ApiOkResponse({ type: MySettingsDto })
+  @ApiUnauthorizedResponse({ description: 'No valid Clerk session' })
+  findMySettings(@CurrentUserId() userId: string) {
+    return this.usersService.findMySettings(userId);
+  }
+
+  @Patch('me/settings')
+  @ApiOperation({ summary: 'Update your own settings' })
+  @ApiOkResponse({ type: MySettingsDto })
+  @ApiBadRequestResponse({ description: 'Validation failed' })
+  @ApiUnauthorizedResponse({ description: 'No valid Clerk session' })
+  updateMySettings(
+    @CurrentUserId() userId: string,
+    @Body() dto: UpdateMySettingsDto,
+  ) {
+    return this.usersService.updateMySettings(userId, dto);
+  }
+
   @Patch(':id')
-  @ApiOperation({ summary: 'Update a user' })
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Update a user (admin only)' })
   @ApiOkResponse({ type: UserResponseDto })
   @ApiBadRequestResponse({ description: 'Validation failed' })
   @ApiUnauthorizedResponse({ description: 'No valid Clerk session' })
+  @ApiForbiddenResponse({ description: 'Caller is not an admin' })
   update(@Param('id') id: string, @Body() updateUserDto: UpdateUserDto) {
     return this.usersService.update(id, updateUserDto);
   }
