@@ -20,6 +20,7 @@ import { ResourcesController } from './resources.controller';
 import { ResourcesService } from './resources.service';
 import { AccessType, ResourceType } from '../generated/prisma/enums';
 import { RolesGuard } from '../roles/roles.guard';
+import { ROLES_KEY } from '../roles/roles.decorator';
 import { ClerkAuthGuard } from '../clerk-auth/clerk-auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -166,10 +167,35 @@ describe('ResourcesController', () => {
   });
 
   describe('remove', () => {
-    it('passes the id through', async () => {
-      await controller.remove('res_1');
+    it('passes the id and the caller through', async () => {
+      await controller.remove('res_1', 'user_1');
 
-      expect(mockResourcesService.remove).toHaveBeenCalledWith('res_1');
+      expect(mockResourcesService.remove).toHaveBeenCalledWith(
+        'res_1',
+        'user_1',
+      );
+    });
+
+    // Deleting your own contribution is the only self-service correction the
+    // product offers, so this route must reach contributors and not just admins.
+    //
+    // `@Roles(UserRole.ADMIN)` could not express that anyway: `RolesGuard`
+    // short-circuits to `true` for a route that declares no roles, so a rule
+    // admitting either an owner or an admin has to be enforced in the service,
+    // where the actor's role is actually read.
+    it('is not gated on the ADMIN role', () => {
+      // The guard reads role metadata off the handler. `RolesGuard` treats
+      // absent metadata as "no roles required", so declaring none here is what
+      // lets a contributor through — the real owner-or-admin check is in the
+      // service, which is the only place that can read the caller's role.
+      // Read by name rather than as a property access, so this is unambiguously
+      // a value lookup rather than an unbound method reference.
+      const handler = Object.getOwnPropertyDescriptor(
+        ResourcesController.prototype,
+        'remove',
+      )?.value as object;
+
+      expect(Reflect.getMetadata(ROLES_KEY, handler)).toBeUndefined();
     });
   });
 });

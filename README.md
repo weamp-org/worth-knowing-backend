@@ -190,7 +190,7 @@ All endpoints are prefixed with `/api/v1`.
 | `GET`    | `/resources/:id/mine` | Authenticated          | Did you contribute it |
 | `POST`   | `/resources`          | Authenticated          | Share a resource      |
 | `PATCH`  | `/resources/:id`      | Contributor or admin   | Update a resource     |
-| `DELETE` | `/resources/:id`      | Admin only             | Delete a resource     |
+| `DELETE` | `/resources/:id`      | Contributor or admin   | Delete a resource     |
 | `GET`    | `/users/me/settings`  | Authenticated          | Your own settings     |
 | `PATCH`  | `/users/me/settings`  | Authenticated          | Update your settings  |
 | `POST`   | `/webhooks/clerk`     | Public (skip throttle) | Clerk webhook events  |
@@ -210,8 +210,27 @@ The template's `POST /users`, `GET /users`, `GET /users/:id`, `PATCH
   it. Moderation should be designed with the reporting and reputation model it
   needs, not inherited as a raw endpoint.
 
-`UserRole.ADMIN` is still used by `DELETE /resources/:id`, so
-`pnpm user:set-role` still has a purpose. See the note on `UsersController`.
+`UserRole.ADMIN` is still meaningful — it widens `PATCH` and `DELETE` on a
+resource from its contributor to any resource — so `pnpm user:set-role` still
+has a purpose. See the note on `UsersController`.
+
+### Who may change a resource
+
+`PATCH /resources/:id` and `DELETE /resources/:id` both admit **the
+contributor or an admin**, and the check lives in `ResourcesService`, not
+behind `@Roles` on the controller.
+
+That placement is forced rather than stylistic. `RolesGuard` short-circuits
+with `if (!requiredRoles) return true`, so a route that declares no `@Roles`
+gets no role lookup at all. A rule admitting either an owner or an admin
+cannot be expressed with that decorator, so nothing would ever ask what role
+the caller has — the service has to.
+
+A contributor being able to delete their own contribution is deliberate: it is
+the only self-service correction the product offers. There is no separate
+"un-attribute" route, because `isAnonymous` already hides the name _and_ keeps
+the resource editable — detaching the contributor outright would only take away
+the author's ability to fix a typo or un-share.
 
 ## Auth model
 

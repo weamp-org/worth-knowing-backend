@@ -10,7 +10,7 @@ import { ResourcesService } from './resources.service';
 import { encodeCursor } from './cursor.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { TagsService } from '../tags/tags.service';
-import { AccessType, ResourceType } from '../generated/prisma/enums';
+import { AccessType, ResourceType, UserRole } from '../generated/prisma/enums';
 import { CreateResourceDto } from './dtos/create-resource.dto';
 
 const createDto = {
@@ -515,11 +515,25 @@ describe('ResourcesService', () => {
 
     it('lets an admin update any resource', async () => {
       prisma.resource.findUnique.mockResolvedValue(ownedBy('someone_else'));
+      prisma.user.findUnique.mockResolvedValue({ role: UserRole.ADMIN });
       prisma.resource.update.mockResolvedValue({ id: 'res_1' });
 
-      await service.update('res_1', { title: 'Moderated' }, 'admin_1', true);
+      // No `isAdmin` flag is threaded in any more: the guard reads the actor's
+      // own role, so an admin reaches this without the controller having to know
+      // anything about roles.
+      await service.update('res_1', { title: 'Moderated' }, 'admin_1');
 
       expect(prisma.resource.update).toHaveBeenCalled();
+    });
+
+    it('refuses a non-owner who is not an admin', async () => {
+      prisma.resource.findUnique.mockResolvedValue(ownedBy('someone_else'));
+      prisma.user.findUnique.mockResolvedValue({ role: UserRole.USER });
+
+      await expect(
+        service.update('res_1', { title: 'Hijacked' }, 'user_1'),
+      ).rejects.toThrow(ForbiddenException);
+      expect(prisma.resource.update).not.toHaveBeenCalled();
     });
 
     it('refuses to update a resource whose contributor was deleted', async () => {
@@ -597,22 +611,78 @@ describe('ResourcesService', () => {
   });
 
   describe('remove', () => {
-    it('deletes an existing resource', async () => {
-      prisma.resource.findUnique.mockResolvedValue({ id: 'res_1' });
+    /** A row the caller owns, so the ownership guard passes. */
+    const ownedBy = (userId: string) => ({
+      id: 'res_1',
+      contributorId: userId,
+      isAnonymous: false,
+    });
+
+    it('lets the contributor delete their own resource', async () => {
+      prisma.resource.findUnique.mockResolvedValue(ownedBy('user_1'));
       prisma.resource.delete.mockResolvedValue({ id: 'res_1' });
 
-      const result = await service.remove('res_1');
+      const result = await service.remove('res_1', 'user_1');
 
-      expect(prisma.resource.delete).toHaveBeenCalledWith({
-        where: { id: 'res_1' },
-      });
+      expect(prisma.resource.delete).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'res_1' } }),
+      );
       expect(result).toEqual({ id: 'res_1' });
+    });
+
+    // Regression: the guard read the row redacted, which nulls
+    // `contributorId`, so the owner was locked out of their own anonymous post.
+    it('lets the owner delete their own anonymous resource', async () => {
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        contributorId: 'user_1',
+        isAnonymous: true,
+      });
+      prisma.resource.delete.mockResolvedValue({ id: 'res_1' });
+
+      await service.remove('res_1', 'user_1');
+
+      expect(prisma.resource.delete).toHaveBeenCalled();
+    });
+
+    it('refuses a non-owner who is not an admin', async () => {
+      prisma.resource.findUnique.mockResolvedValue(ownedBy('someone_else'));
+      prisma.user.findUnique.mockResolvedValue({ role: UserRole.USER });
+
+      await expect(service.remove('res_1', 'user_1')).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(prisma.resource.delete).not.toHaveBeenCalled();
+    });
+
+    it('lets an admin delete any resource', async () => {
+      prisma.resource.findUnique.mockResolvedValue(ownedBy('someone_else'));
+      prisma.user.findUnique.mockResolvedValue({ role: UserRole.ADMIN });
+      prisma.resource.delete.mockResolvedValue({ id: 'res_1' });
+
+      await service.remove('res_1', 'admin_1');
+
+      expect(prisma.resource.delete).toHaveBeenCalled();
+    });
+
+    it('refuses to delete a resource whose contributor was deleted', async () => {
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        contributorId: null,
+        isAnonymous: false,
+      });
+      prisma.user.findUnique.mockResolvedValue({ role: UserRole.USER });
+
+      await expect(service.remove('res_1', 'user_1')).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(prisma.resource.delete).not.toHaveBeenCalled();
     });
 
     it('throws NotFoundException rather than deleting a missing resource', async () => {
       prisma.resource.findUnique.mockResolvedValue(null);
 
-      await expect(service.remove('res_missing')).rejects.toThrow(
+      await expect(service.remove('res_missing', 'user_1')).rejects.toThrow(
         NotFoundException,
       );
       expect(prisma.resource.delete).not.toHaveBeenCalled();

@@ -34,9 +34,7 @@ import {
 import { ClerkAuthGuard } from '../clerk-auth/clerk-auth.guard';
 import { CurrentUserId } from '../clerk-auth/current-user.decorator';
 import { RolesGuard } from '../roles/roles.guard';
-import { Roles } from '../roles/roles.decorator';
 import { Public } from '../public/public.decorator';
-import { UserRole } from '../generated/prisma/enums';
 
 @UseGuards(ClerkAuthGuard, RolesGuard)
 @Controller('resources')
@@ -108,12 +106,14 @@ export class ResourcesController {
 
   @Patch(':id')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Update a resource you contributed' })
+  @ApiOperation({
+    summary: 'Update a resource you contributed (admins may update any)',
+  })
   @ApiOkResponse({ type: ResourceResponseDto })
   @ApiBadRequestResponse({ description: 'Validation failed' })
   @ApiUnauthorizedResponse({ description: 'No valid Clerk session' })
   @ApiForbiddenResponse({
-    description: 'Caller did not contribute this resource',
+    description: 'Caller did not contribute this resource and is not an admin',
   })
   @ApiNotFoundResponse({ description: 'No resource with that id' })
   update(
@@ -124,15 +124,36 @@ export class ResourcesController {
     return this.resourcesService.update(id, updateResourceDto, userId);
   }
 
-  @Roles(UserRole.ADMIN)
+  /**
+   * Removes a resource for everyone, permanently.
+   *
+   * The contributor may do this to their own contribution, which is the only
+   * self-service correction the product offers — share something you regret and
+   * take it down again. The `why` goes with it, which is why the client confirms
+   * rather than just calling this.
+   *
+   * There is deliberately no "un-attribute" alternative. Anonymity already hides
+   * the name *and* keeps the resource editable, so detaching the contributor
+   * outright would only take away the author's ability to fix a typo. A
+   * contributor who wants the resource gone gets it gone; one who wants the name
+   * gone flips `isAnonymous` instead.
+   *
+   * Authorization is in the service, not here: `RolesGuard` short-circuits when a
+   * route declares no `@Roles`, so a rule that admits either an owner or an
+   * admin has to be expressed where the role is actually read.
+   */
   @Delete(':id')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Delete a resource (admin only)' })
+  @ApiOperation({
+    summary: 'Delete a resource you contributed (admins may delete any)',
+  })
   @ApiOkResponse({ type: ResourceResponseDto })
   @ApiUnauthorizedResponse({ description: 'No valid Clerk session' })
-  @ApiForbiddenResponse({ description: 'Caller is not an admin' })
+  @ApiForbiddenResponse({
+    description: 'Caller did not contribute this resource and is not an admin',
+  })
   @ApiNotFoundResponse({ description: 'No resource with that id' })
-  remove(@Param('id') id: string) {
-    return this.resourcesService.remove(id);
+  remove(@Param('id') id: string, @CurrentUserId() userId: string) {
+    return this.resourcesService.remove(id, userId);
   }
 }

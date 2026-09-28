@@ -375,21 +375,44 @@ describe('Resources (e2e)', () => {
       expect(prisma.resource.create).not.toHaveBeenCalled();
     });
 
-    it('DELETE is forbidden for a non-admin', async () => {
+    it('DELETE is forbidden for a signed-in stranger', async () => {
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        contributorId: 'someone_else',
+      });
+
       await asUser('clerk_123').delete('/api/v1/resources/res_1').expect(403);
 
       expect(prisma.resource.delete).not.toHaveBeenCalled();
     });
 
+    // Deleting your own contribution is the only self-service correction the
+    // product offers, so it must not require an admin.
+    it('DELETE succeeds for the contributor', async () => {
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        contributorId: 'clerk_123',
+      });
+
+      await asUser('clerk_123').delete('/api/v1/resources/res_1').expect(200);
+
+      expect(prisma.resource.delete).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'res_1' } }),
+      );
+    });
+
     it('DELETE succeeds for an admin', async () => {
       currentUserRole = UserRole.ADMIN;
-      prisma.resource.findUnique.mockResolvedValue({ id: 'res_1' });
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        contributorId: 'someone_else',
+      });
 
       await asUser('clerk_admin').delete('/api/v1/resources/res_1').expect(200);
 
-      expect(prisma.resource.delete).toHaveBeenCalledWith({
-        where: { id: 'res_1' },
-      });
+      expect(prisma.resource.delete).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'res_1' } }),
+      );
     });
   });
 

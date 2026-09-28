@@ -8,6 +8,7 @@ import { Prisma } from '../generated/prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { TagsService } from '../tags/tags.service';
+import { UserRole } from '../generated/prisma/enums';
 import { CreateResourceDto } from './dtos/create-resource.dto';
 import { UpdateResourceDto } from './dtos/update-resource.dto';
 import { decodeCursor, encodeCursor } from './cursor.util';
@@ -198,25 +199,42 @@ export class ResourcesService {
     return resource?.contributorId === viewerId;
   }
 
-  async update(
-    id: string,
-    dto: UpdateResourceDto,
-    actorId: string,
-    isAdmin = false,
-  ) {
+  /**
+   * Whether the actor may change or remove the resource, and throws if not.
+   *
+   * The contributor, or any admin. This lives in the service rather than behind
+   * `@Roles` on the controller because `RolesGuard` short-circuits with
+   * `if (!requiredRoles) return true` — a route that must accept *either* an
+   * owner or an admin cannot be expressed with that decorator, so nothing would
+   * ever ask what role the caller has. Deciding here keeps the rule in one
+   * place for both writes.
+   *
+   * Without it, any signed-in user could flip `isAnonymous` on someone else's
+   * contribution and undo the one control the anonymity feature exists to
+   * provide — or delete a contribution outright. The local `User.id` is the
+   * Clerk user id, so the comparison is direct.
+   */
+  private async assertCanModify(id: string, actorId: string) {
     // Read as the actor rather than anonymously. For the owner that leaves
-    // `contributorId` populated, which is exactly what the guard below needs;
-    // reading it redacted would null that field and lock the owner out of
-    // editing their own anonymous resource.
+    // `contributorId` populated, which is exactly what the check below needs;
+    // reading it redacted would null that field and lock the owner out of their
+    // own anonymous resource.
     const existing = await this.findOne(id, actorId);
 
-    // Without this, any signed-in user could flip `isAnonymous` on someone
-    // else's contribution and undo the one control the anonymity feature exists
-    // to provide. The local `User.id` is the Clerk user id, so the comparison
-    // is direct.
-    if (!isAdmin && existing.contributorId !== actorId) {
-      throw new ForbiddenException('You can only edit your own resources');
+    if (existing.contributorId === actorId) return;
+
+    const actor = await this.prisma.user.findUnique({
+      where: { id: actorId },
+      select: { role: true },
+    });
+
+    if (actor?.role !== UserRole.ADMIN) {
+      throw new ForbiddenException('You can only change your own resources');
     }
+  }
+
+  async update(id: string, dto: UpdateResourceDto, actorId: string) {
+    await this.assertCanModify(id, actorId);
 
     const { tags, ...fields } = dto;
     const data: Prisma.ResourceUpdateInput = { ...fields };
@@ -246,9 +264,15 @@ export class ResourcesService {
     });
   }
 
-  async remove(id: string) {
-    await this.findOne(id);
+  async remove(id: string, actorId: string) {
+    await this.assertCanModify(id, actorId);
 
-    return this.prisma.resource.delete({ where: { id } });
+    // `include` so the response matches the `ResourceResponseDto` the route
+    // documents. It costs a second query for a body the client ignores, but the
+    // alternative is a documented shape the endpoint does not actually return.
+    return this.prisma.resource.delete({
+      where: { id },
+      include: resourceInclude,
+    });
   }
 }
