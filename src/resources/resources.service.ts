@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -81,6 +82,26 @@ function isCursorNotFound(error: unknown): boolean {
   );
 }
 
+/** P2002: a unique index rejected the write. */
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === 'P2002'
+  );
+}
+
+/**
+ * The same link, from the same person, twice.
+ *
+ * Wording matters here. This must not read as a judgement that a duplicate is
+ * worthless: two *different* people sharing the same link is the product
+ * working, and each `why` is the value. Only the author repeating themselves is
+ * noise, so the message points at the edit they probably wanted rather than
+ * telling them the resource is not shareable.
+ */
+const DUPLICATE_MESSAGE =
+  'You have already shared this link. Edit that contribution instead of posting it again.';
+
 @Injectable()
 export class ResourcesService {
   constructor(
@@ -88,9 +109,44 @@ export class ResourcesService {
     private readonly tagsService: TagsService,
   ) {}
 
+  /**
+   * Whether this contributor already shared this exact link.
+   *
+   * The `@@unique([contributorId, url])` index is what actually enforces this;
+   * this read exists to produce a 409 with a sentence a person can act on
+   * instead of a bare P2002. A 409 also beats letting the write fail, because a
+   * contributor who double-submits gets a form error naming the problem rather
+   * than a 500.
+   *
+   * Deliberately *not* global. Two people independently finding the same
+   * resource worth knowing is the product working — each brings a different
+   * `why`, and deduplicating would throw one of those away, which is the last
+   * thing this product should lose. Only a repeated submission by the author is
+   * noise, and rejecting that costs nobody else their contribution.
+   */
+  private async assertNotAlreadyShared(
+    url: string,
+    contributorId: string,
+    /** Excluded, so re-saving a resource without changing its URL is allowed. */
+    exceptId?: string,
+  ) {
+    const existing = await this.prisma.resource.findFirst({
+      where: {
+        url,
+        contributorId,
+        ...(exceptId ? { id: { not: exceptId } } : {}),
+      },
+      select: { id: true },
+    });
+
+    if (existing) throw new ConflictException(DUPLICATE_MESSAGE);
+  }
+
   async create(dto: CreateResourceDto, contributorId: string) {
     const { tags, isAnonymous, ...fields } = dto;
     const tagRows = this.tagsService.normalizeTags(tags);
+
+    await this.assertNotAlreadyShared(dto.url, contributorId);
 
     await this.tagsService.ensureTags(tagRows);
 
@@ -100,15 +156,25 @@ export class ResourcesService {
     const resolvedAnonymous =
       isAnonymous ?? (await this.anonymousByDefault(contributorId));
 
-    return this.prisma.resource.create({
-      data: {
-        ...fields,
-        isAnonymous: resolvedAnonymous,
-        contributorId,
-        tags: { connect: tagRows.map(({ slug }) => ({ slug })) },
-      },
-      include: resourceInclude,
-    });
+    try {
+      return await this.prisma.resource.create({
+        data: {
+          ...fields,
+          isAnonymous: resolvedAnonymous,
+          contributorId,
+          tags: { connect: tagRows.map(({ slug }) => ({ slug })) },
+        },
+        include: resourceInclude,
+      });
+    } catch (error) {
+      // Two submissions that both pass the read above. The index is what
+      // actually decides, so a race has to come out the same way as a
+      // deliberate duplicate rather than as a 500.
+      if (isUniqueViolation(error))
+        throw new ConflictException(DUPLICATE_MESSAGE);
+
+      throw error;
+    }
   }
 
   /**
@@ -236,6 +302,26 @@ export class ResourcesService {
   async update(id: string, dto: UpdateResourceDto, actorId: string) {
     await this.assertCanModify(id, actorId);
 
+    // Only when the URL is actually changing. Re-saving a resource without
+    // touching its URL must not trip the check against itself, hence the
+    // exclusion of this resource's own row.
+    //
+    // `data.url` is typed as the Prisma field-update shape, so a plain string
+    // needs unwrapping. An admin editing somebody else's resource is still
+    // checked against *that* contributor's other resources, not the admin's:
+    // the index is on `(contributorId, url)`, so moving a contribution onto a
+    // link its own author already used is the collision that matters.
+    if (typeof dto.url === 'string') {
+      const owner = await this.prisma.resource.findUnique({
+        where: { id },
+        select: { contributorId: true },
+      });
+
+      if (owner?.contributorId) {
+        await this.assertNotAlreadyShared(dto.url, owner.contributorId, id);
+      }
+    }
+
     const { tags, ...fields } = dto;
     const data: Prisma.ResourceUpdateInput = { ...fields };
 
@@ -257,11 +343,20 @@ export class ResourcesService {
       data.tags = { set: tagRows.map(({ slug }) => ({ slug })) };
     }
 
-    return this.prisma.resource.update({
-      where: { id },
-      data,
-      include: resourceInclude,
-    });
+    try {
+      return await this.prisma.resource.update({
+        where: { id },
+        data,
+        include: resourceInclude,
+      });
+    } catch (error) {
+      // Same reason as in `create`: the index decides, and a losing racer must
+      // surface the same 409 a deliberate duplicate gets.
+      if (isUniqueViolation(error))
+        throw new ConflictException(DUPLICATE_MESSAGE);
+
+      throw error;
+    }
   }
 
   async remove(id: string, actorId: string) {

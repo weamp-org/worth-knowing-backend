@@ -15,6 +15,7 @@ import { getAuth } from '@clerk/express';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
+  ApiConflictResponse,
   ApiCreatedResponse,
   ApiForbiddenResponse,
   ApiNotFoundResponse,
@@ -47,6 +48,9 @@ export class ResourcesController {
   @ApiCreatedResponse({ type: ResourceResponseDto })
   @ApiBadRequestResponse({ description: 'Validation failed' })
   @ApiUnauthorizedResponse({ description: 'No valid Clerk session' })
+  @ApiConflictResponse({
+    description: 'You have already shared this link',
+  })
   create(
     @CurrentUserId() contributorId: string,
     @Body() createResourceDto: CreateResourceDto,
@@ -116,6 +120,9 @@ export class ResourcesController {
     description: 'Caller did not contribute this resource and is not an admin',
   })
   @ApiNotFoundResponse({ description: 'No resource with that id' })
+  @ApiConflictResponse({
+    description: 'The new URL is already one of this contributor’s resources',
+  })
   update(
     @Param('id') id: string,
     @Body() updateResourceDto: UpdateResourceDto,

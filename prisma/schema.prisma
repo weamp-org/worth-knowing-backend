@@ -74,6 +74,16 @@ model Resource {
   @@index([contributorId])
   @@index([createdAt])
   @@index([type, createdAt])
+  // One contributor cannot post the same link twice. This is deliberately
+  // *per contributor* and not global: two people independently finding the same
+  // resource worth knowing is the product working, and each brings a different
+  // `why`, which is the value. Only a repeated submission by the author is
+  // noise, and rejecting that discards nothing anybody else wrote.
+  //
+  // `contributorId` is nullable and Postgres does not treat NULLs as
+  // conflicting in a unique index, so rows belonging to a deleted contributor
+  // never block one another — which is right, since nobody can edit them.
+  @@unique([contributorId, url])
 }
 
 /// Free-form and contributor-created. `name` is the display form as typed

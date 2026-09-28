@@ -29,6 +29,7 @@ describe('Resources (e2e)', () => {
     resource: {
       findMany: jest.Mock;
       findUnique: jest.Mock;
+      findFirst: jest.Mock;
       create: jest.Mock;
       update: jest.Mock;
       delete: jest.Mock;
@@ -74,6 +75,9 @@ describe('Resources (e2e)', () => {
         resource: {
           findMany: jest.fn().mockResolvedValue([]),
           findUnique: jest.fn().mockResolvedValue(null),
+          // No match by default, so the duplicate guard stays out of the way of
+          // every other test here.
+          findFirst: jest.fn().mockResolvedValue(null),
           update: jest
             .fn()
             .mockResolvedValue({ id: 'res_1', contributor: null }),
@@ -373,6 +377,70 @@ describe('Resources (e2e)', () => {
         .expect(400);
 
       expect(prisma.resource.create).not.toHaveBeenCalled();
+    });
+
+    describe('duplicate links', () => {
+      it('POST 409s when the contributor already shared that link', async () => {
+        prisma.resource.findFirst.mockResolvedValue({ id: 'res_other' });
+
+        const response = await asUser('clerk_123')
+          .post('/api/v1/resources')
+          .send(validBody)
+          .expect(409);
+
+        expect(prisma.resource.create).not.toHaveBeenCalled();
+        expect(JSON.stringify(response.body)).toContain(
+          'already shared this link',
+        );
+      });
+
+      // The whole point of scoping the check to the contributor: two people
+      // finding the same thing is the product working, and each `why` is the
+      // value. A global check would throw one of those away.
+      it('POST allows a different contributor to share the same link', async () => {
+        prisma.resource.findFirst.mockImplementation(
+          ({ where }: { where: { contributorId: string } }) =>
+            Promise.resolve(
+              where.contributorId === 'clerk_someone_else'
+                ? { id: 'res_other' }
+                : null,
+            ),
+        );
+
+        await asUser('clerk_123')
+          .post('/api/v1/resources')
+          .send(validBody)
+          .expect(201);
+      });
+
+      it('PATCH 409s when the new URL is one the contributor already shared', async () => {
+        prisma.resource.findUnique.mockResolvedValue({
+          id: 'res_1',
+          contributorId: 'clerk_123',
+        });
+        prisma.resource.findFirst.mockResolvedValue({ id: 'res_other' });
+
+        await asUser('clerk_123')
+          .patch('/api/v1/resources/res_1')
+          .send({ url: 'https://example.com/sapiens' })
+          .expect(409);
+
+        expect(prisma.resource.update).not.toHaveBeenCalled();
+      });
+
+      it('PATCH without a URL change is not checked at all', async () => {
+        prisma.resource.findUnique.mockResolvedValue({
+          id: 'res_1',
+          contributorId: 'clerk_123',
+        });
+
+        await asUser('clerk_123')
+          .patch('/api/v1/resources/res_1')
+          .send({ title: 'A better title' })
+          .expect(200);
+
+        expect(prisma.resource.findFirst).not.toHaveBeenCalled();
+      });
     });
 
     it('DELETE is forbidden for a signed-in stranger', async () => {

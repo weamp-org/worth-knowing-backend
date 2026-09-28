@@ -181,21 +181,21 @@ The project uses two env files loaded in order: `.env.local` (local overrides, g
 
 All endpoints are prefixed with `/api/v1`.
 
-| Method   | Path                  | Auth                   | Description           |
-| -------- | --------------------- | ---------------------- | --------------------- |
-| `GET`    | `/`                   | Public                 | Service health        |
-| `GET`    | `/tags`               | Public                 | Search tags           |
-| `PATCH`  | `/tags/:id`           | Admin only             | Rename a tag          |
-| `DELETE` | `/tags/:id`           | Admin only             | Delete an unused tag  |
-| `GET`    | `/resources`          | Public                 | List resources        |
-| `GET`    | `/resources/:id`      | Public                 | One resource          |
-| `GET`    | `/resources/:id/mine` | Authenticated          | Did you contribute it |
-| `POST`   | `/resources`          | Authenticated          | Share a resource      |
-| `PATCH`  | `/resources/:id`      | Contributor or admin   | Update a resource     |
-| `DELETE` | `/resources/:id`      | Contributor or admin   | Delete a resource     |
-| `GET`    | `/users/me/settings`  | Authenticated          | Your own settings     |
-| `PATCH`  | `/users/me/settings`  | Authenticated          | Update your settings  |
-| `POST`   | `/webhooks/clerk`     | Public (skip throttle) | Clerk webhook events  |
+| Method   | Path                  | Auth                   | Description                                            |
+| -------- | --------------------- | ---------------------- | ------------------------------------------------------ |
+| `GET`    | `/`                   | Public                 | Service health                                         |
+| `GET`    | `/tags`               | Public                 | Search tags                                            |
+| `PATCH`  | `/tags/:id`           | Admin only             | Rename a tag                                           |
+| `DELETE` | `/tags/:id`           | Admin only             | Delete an unused tag                                   |
+| `GET`    | `/resources`          | Public                 | List resources                                         |
+| `GET`    | `/resources/:id`      | Public                 | One resource                                           |
+| `GET`    | `/resources/:id/mine` | Authenticated          | Did you contribute it                                  |
+| `POST`   | `/resources`          | Authenticated          | Share a resource (409 if you already shared that link) |
+| `PATCH`  | `/resources/:id`      | Contributor or admin   | Update a resource                                      |
+| `DELETE` | `/resources/:id`      | Contributor or admin   | Delete a resource                                      |
+| `GET`    | `/users/me/settings`  | Authenticated          | Your own settings                                      |
+| `PATCH`  | `/users/me/settings`  | Authenticated          | Update your settings                                   |
+| `POST`   | `/webhooks/clerk`     | Public (skip throttle) | Clerk webhook events                                   |
 
 The template's `POST /users`, `GET /users`, `GET /users/:id`, `PATCH
 /users/:id` and `DELETE /users/:id` were all removed.
@@ -240,6 +240,32 @@ resource.
 This is also the only way a tag can ever disappear. Tags are created implicitly
 and nothing sweeps them, so a tag orphaned by a deleted resource stays in the
 vocabulary forever. That is the reason the route exists.
+
+### Duplicate links
+
+A contributor cannot post the same link twice. `@@unique([contributorId, url])`
+enforces it, and `ResourcesService` reads first so the failure is a 409 with a
+sentence to act on rather than a P2002. The index is what decides: the service
+also catches P2002 on both create and update, so a double-submitted form that
+passes the read and loses the race still comes out as the same 409 instead of a 500.
+
+**The check is per contributor, deliberately.** Two people independently finding
+the same resource worth knowing is the product working — each brings a different
+`why`, and that reasoning is the value. Deduplicating globally would discard one
+person's actual contribution, and any boundary drawn on "same resource" would be
+arbitrary the moment two URLs pointed at one book. Only the author repeating
+themselves is noise, and rejecting that costs nobody else anything.
+
+`PATCH /resources/:id` is checked the same way, against the _contributor's_
+other resources and excluding the one being edited, so re-saving a resource
+without touching its URL is never a conflict. An admin editing somebody else's
+resource is still checked against that contributor's rows, since the index is on
+`(contributorId, url)` and moving a contribution onto a link its own author
+already used is the collision that matters.
+
+`contributorId` is nullable and Postgres does not treat NULLs as conflicting in a
+unique index, so rows belonging to a deleted contributor never block one
+another — correct, since nobody can edit them.
 
 ### Who may change a resource
 

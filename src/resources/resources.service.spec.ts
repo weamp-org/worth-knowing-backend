@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
@@ -28,6 +29,7 @@ describe('ResourcesService', () => {
       create: jest.Mock;
       findMany: jest.Mock;
       findUnique: jest.Mock;
+      findFirst: jest.Mock;
       update: jest.Mock;
       delete: jest.Mock;
     };
@@ -46,6 +48,9 @@ describe('ResourcesService', () => {
               create: jest.fn(),
               findMany: jest.fn(),
               findUnique: jest.fn(),
+              // No match by default, so the duplicate guard stays out of the way
+              // of every other test in this file.
+              findFirst: jest.fn().mockResolvedValue(null),
               update: jest.fn(),
               delete: jest.fn(),
             },
@@ -297,6 +302,137 @@ describe('ResourcesService', () => {
       expect(createData().tags).toEqual({
         connect: [{ slug: 'evolution' }, { slug: 'c++' }],
       });
+    });
+  });
+
+  describe('duplicate links', () => {
+    it('rejects the same contributor sharing a link twice', async () => {
+      prisma.resource.findFirst.mockResolvedValue({ id: 'res_1' });
+
+      await expect(service.create(createDto, 'user_1')).rejects.toThrow(
+        ConflictException,
+      );
+      await expect(service.create(createDto, 'user_1')).rejects.toThrow(
+        /already shared this link/,
+      );
+      expect(prisma.resource.create).not.toHaveBeenCalled();
+    });
+
+    // The check is scoped to the contributor, so the duplicate lookup must be.
+    // A global check would be the thing that throws away somebody's `why`.
+    it('scopes the lookup to the contributor, not the link', async () => {
+      await service.create(createDto, 'user_1');
+
+      expect(prisma.resource.findFirst).toHaveBeenCalledWith({
+        where: { url: createDto.url, contributorId: 'user_1' },
+        select: { id: true },
+      });
+    });
+
+    it('allows two different contributors to share the same link', async () => {
+      prisma.resource.create.mockResolvedValue({ id: 'res_2' });
+
+      await service.create(createDto, 'user_1');
+      await service.create(createDto, 'user_2');
+
+      expect(prisma.resource.create).toHaveBeenCalledTimes(2);
+    });
+
+    // Check-then-write has a window. The unique index is what actually decides,
+    // so a losing racer has to come out as the same 409 rather than a 500.
+    it('turns a unique-index violation into the same conflict', async () => {
+      prisma.resource.create.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+          code: 'P2002',
+          clientVersion: '7.10.0',
+        }),
+      );
+
+      await expect(service.create(createDto, 'user_1')).rejects.toThrow(
+        ConflictException,
+      );
+    });
+
+    it('does not swallow an unrelated database error', async () => {
+      prisma.resource.create.mockRejectedValue(new Error('connection lost'));
+
+      await expect(service.create(createDto, 'user_1')).rejects.toThrow(
+        'connection lost',
+      );
+    });
+
+    it('does not check at all when the resource is only being re-saved', async () => {
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        contributorId: 'user_1',
+        isAnonymous: false,
+      });
+      prisma.resource.update.mockResolvedValue({ id: 'res_1' });
+      prisma.resource.findFirst.mockClear();
+
+      await service.update('res_1', { title: 'New' }, 'user_1');
+
+      expect(prisma.resource.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('rejects an edit that moves a resource onto a link it already shares', async () => {
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        contributorId: 'user_1',
+        isAnonymous: false,
+      });
+      prisma.resource.findFirst.mockResolvedValue({ id: 'res_2' });
+
+      await expect(
+        service.update(
+          'res_1',
+          { url: 'https://example.com/sapiens' },
+          'user_1',
+        ),
+      ).rejects.toThrow(ConflictException);
+      expect(prisma.resource.update).not.toHaveBeenCalled();
+    });
+
+    it('checks the edit against the contributor, excluding the resource itself', async () => {
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        contributorId: 'user_1',
+        isAnonymous: false,
+      });
+      prisma.resource.update.mockResolvedValue({ id: 'res_1' });
+
+      await service.update(
+        'res_1',
+        { url: 'https://example.com/sapiens' },
+        'user_1',
+      );
+
+      expect(prisma.resource.findFirst).toHaveBeenCalledWith({
+        where: {
+          url: 'https://example.com/sapiens',
+          contributorId: 'user_1',
+          id: { not: 'res_1' },
+        },
+        select: { id: true },
+      });
+    });
+
+    it('turns a unique-index violation on edit into the same conflict', async () => {
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        contributorId: 'user_1',
+        isAnonymous: false,
+      });
+      prisma.resource.update.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+          code: 'P2002',
+          clientVersion: '7.10.0',
+        }),
+      );
+
+      await expect(
+        service.update('res_1', { url: 'https://example.com/new' }, 'user_1'),
+      ).rejects.toThrow(ConflictException);
     });
   });
 
