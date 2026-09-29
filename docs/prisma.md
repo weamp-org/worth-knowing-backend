@@ -71,7 +71,8 @@ model User {
   role                UserRole @default(USER)
   anonymousByDefault  Boolean  @default(false)
 
-  resources Resource[]
+  resources  Resource[]
+  collections Collection[]
 }
 
 /// Every username that must not be claimable, whether or not anyone holds it.
@@ -101,6 +102,8 @@ model Resource {
   @@index([createdAt])
   @@index([type, createdAt])
   @@unique([contributorId, url])
+
+  collectionResources CollectionResource[]
 }
 
 model Tag {
@@ -111,6 +114,35 @@ model Tag {
   updatedAt DateTime @updatedAt
 
   resources Resource[]
+}
+
+model Collection {
+  id          String   @id @default(cuid())
+  title       String   @db.VarChar(120)
+  description String?  @db.VarChar(500)
+  isPrivate   Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  ownerId String?
+  owner   User?   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  resources CollectionResource[]
+
+  @@index([ownerId, createdAt(sort: Desc), id(sort: Desc)])
+}
+
+model CollectionResource {
+  collectionId String
+  resourceId   String
+  addedAt      DateTime @default(now())
+
+  collection Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  resource   Resource   @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+  @@id([collectionId, resourceId])
+  @@index([collectionId, addedAt(sort: Desc), resourceId(sort: Desc)])
+  @@index([resourceId])
 }
 ```
 
@@ -208,9 +240,14 @@ sanity, not an injection guard.
 `Resource.tags` is a Prisma **implicit** many-to-many, so Prisma owns the
 `_ResourceToTag` join table. Both of its foreign keys cascade, which only
 removes join rows — deleting a `Tag` never deletes the `Resource` pointing at
-it, and vice versa. An explicit join model is only worth it if you need
-metadata on the assignment itself (who tagged it, when), which moderation might
-want later.
+it, and vice versa.
+
+An explicit join model is only worth it when you need metadata on the assignment
+itself, and the _ordering_ counts: Prisma cannot `orderBy` an implicit
+many-to-many, so a set that has a meaningful order has to be a row that can be
+sorted. `CollectionResource` is that row. Tags have no such order — a resource
+carries five of them, unordered — which is why `_ResourceToTag` stayed implicit.
+See [Collections](#collections) below.
 
 `Tag` keeps two identifiers on purpose:
 
@@ -242,6 +279,77 @@ so **tag URLs must be built with `encodeURIComponent`** (`/tags/c%23`).
 `TagsService.normalizeTags` is where the policy lives: it rejects unnormalizable
 names, caps the count, and dedupes by slug. `slugifyTag` itself stays pure and
 never throws.
+
+### Collections
+
+`CollectionResource` is the first **explicit** join model in the schema, for the
+reason given above: "in the order I collected them, newest first" is a property
+of the assignment, and an implicit many-to-many has nowhere to put it.
+
+Three decisions here are worth stating, because each one departs from what the
+rest of the schema does.
+
+**The owner cascades; the contributor is nulled.** `Collection.owner` uses
+`onDelete: Cascade` where `Resource.contributor` uses `SetNull`, and that is not
+an inconsistency. A contribution outlives its author because its `why` is still
+worth reading and nobody can be named for it anyway. A collection has no content
+of its own — only an arrangement of somebody else's — and with the account gone
+there is no curator to be curated _by_. An ownerless collection could not be
+listed by any route, so `SetNull` would strand rows rather than preserve
+anything. Deleting your account deletes your collections, along with their join
+rows, via two cascades.
+
+**`isPrivate` defaults to `true`,** which is the opposite of `isProfilePrivate`
+and `isAnonymous`. Those gate something already published; this gates something
+that has not been. Collecting is a personal act, and publishing it should be a
+separate decision rather than a side effect of making the list.
+
+**Visibility is a boolean, not an enum.** Two states, and every other two-state
+privacy control in the schema is a boolean too. Adding a third state later would
+be the moment to reconsider, and it would be a migration.
+
+#### The compound keyset cursor
+
+`GET /api/v1/collections/:id/resources` is keyset-paginated like the resource
+feed, over the **join table** rather than over `Resource`. Ordering by a
+resource's own `createdAt` would be a different and wrong list: it reflects when
+each resource was _shared_, not when it was _collected_.
+
+That has one consequence worth knowing. `resourceId` is not unique on its own —
+the same resource can sit in fifty collections — so Prisma refuses it as a
+cursor. The primary key `(collectionId, resourceId)` is unique, so that is the
+cursor target:
+
+```ts
+cursor: {
+  collectionId_resourceId: { collectionId: id, resourceId: decodeCursor(cursor) },
+},
+skip: 1,
+```
+
+The opaque cursor still only carries a **resource id**. `collectionId` is
+already in the path, so `src/pagination/cursor.util.ts` needed no change — it
+was moved out of `resources/` for sharing but its format is identical for both
+call sites. The index
+`[collectionId, addedAt DESC, resourceId DESC]` serves it, with `resourceId` as
+the tiebreaker for the same reason `id` is everywhere else: `addedAt` is not
+unique.
+
+`@@index([resourceId])` exists for the opposite direction — "which of this
+resource's owner's collections already hold it" — which backs
+`?resourceId=` on `GET /collections/me`. Without it that check is a sequential
+scan of the whole join table.
+
+#### Deleting
+
+Both foreign keys cascade, so deleting a collection removes its join rows and
+deleting a resource removes it from every collection it was in. Neither touches
+a resource. `TagsService.remove` refuses to delete a tag that still has
+resources, and collections deliberately do **not** follow that precedent: that
+guard exists because detaching a tag would rewrite contributions other people
+wrote. A join row records only that this owner chose this resource for this
+list, and deleting the list is the owner withdrawing their own arrangement. The
+resources inside keep their own attribution and are untouched.
 
 ### Granting ADMIN
 

@@ -8,7 +8,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { Prisma } from '../generated/prisma/client';
 
 import { ResourcesService } from './resources.service';
-import { encodeCursor } from './cursor.util';
+import { encodeCursor } from '../pagination/cursor.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { TagsService } from '../tags/tags.service';
 import { AccessType, ResourceType, UserRole } from '../generated/prisma/enums';

@@ -1,0 +1,168 @@
+import { Prisma } from '../generated/prisma/client';
+
+import {
+  resolveDisplayName,
+  resolveProfilePath,
+} from '../users/display-name.util';
+
+/**
+ * The read shape for a resource, and the two transformations every read has to
+ * apply before it leaves the service.
+ *
+ * Extracted from `ResourcesService` rather than left private to it, because
+ * `CollectionsService` has to answer the same question for a *different* set of
+ * resources: the ones somebody has gathered into a collection. Making a
+ * collection public exposes its contents publicly, and an anonymous contribution
+ * whose author asked not to be named is exactly the thing that must not become
+ * newly discoverable through that route. So the redaction has to travel with the
+ * read, not be reimplemented — a second copy of `redactAnonymous` is a second
+ * chance to get the anonymity rule wrong.
+ *
+ * What lives here is only the *shape* of a resource read. Which resources, in
+ * which order, and who may see them is each service's business.
+ */
+
+/**
+ * Read shape for the public API. A resource whose contributor has been deleted
+ * is still returned, just without the attribution.
+ */
+export const resourceInclude = {
+  contributor: {
+    select: {
+      id: true,
+      name: true,
+      imageUrl: true,
+      // Read only to build `profilePath` and to resolve a display name. Neither
+      // reaches the response. See {@link withProfilePath}.
+      username: true,
+      usernameLower: true,
+      isProfilePrivate: true,
+    },
+  },
+  tags: { orderBy: { name: 'asc' } },
+} as const;
+
+/**
+ * Newest first, with `id` as a tiebreaker. `createdAt` alone is not unique, and
+ * without a total order a cursor can skip or repeat rows when several resources
+ * share a timestamp — which they will, since `now()` has millisecond resolution.
+ */
+export const resourceOrderBy = [
+  { createdAt: 'desc' },
+  { id: 'desc' },
+] satisfies Prisma.ResourceOrderByWithRelationInput[];
+
+/** A resource row as read, before any redaction. */
+export type ResourceWithRelations = Prisma.ResourceGetPayload<{
+  include: typeof resourceInclude;
+}>;
+
+/** The contributor fields that never reach the response. */
+type DerivedContributorFields =
+  | 'username'
+  | 'usernameLower'
+  | 'isProfilePrivate';
+
+/**
+ * A resource as it is returned, once redaction and `profilePath` are applied.
+ *
+ * Distinct from {@link ResourceWithRelations} because the contributor has been
+ * reshaped: the fields `profilePath` and the display name are derived from are
+ * gone, replaced by a resolved `name` and a path. Everything else is the same.
+ */
+export type ResourceResponse = Omit<ResourceWithRelations, 'contributor'> & {
+  contributor:
+    | (Omit<
+        NonNullable<ResourceWithRelations['contributor']>,
+        DerivedContributorFields
+      > & { profilePath: string | null })
+    | null;
+};
+
+/**
+ * Withholds the contributor from a resource shared anonymously.
+ *
+ * Both the `contributor` object and the raw `contributorId` go, because
+ * keeping the id would defeat the point: the same id appears on the person's
+ * public contributions, so anyone comparing two posts could link the anonymous
+ * one back to a name. Nothing is left to correlate on.
+ *
+ * The owner is not redacted from their own resource, which is what lets the
+ * edit form load and pre-fill. A stranger presenting any token is still
+ * redacted — only an exact `contributorId` match is let through.
+ *
+ * `isAnonymous` stays on the response so a client can tell an anonymous post
+ * from one whose contributor was deleted. Those are different states and the
+ * UI words them differently.
+ */
+export function redactAnonymous(
+  resource: ResourceWithRelations,
+  viewerId?: string,
+): ResourceWithRelations {
+  if (!resource.isAnonymous || resource.contributorId === viewerId) {
+    return resource;
+  }
+
+  return { ...resource, contributor: null, contributorId: null };
+}
+
+/**
+ * Resolves each contributor summary to the path a client should link to, or
+ * `null` when it should not link at all.
+ *
+ * The decision is made here rather than in the client for the same reason
+ * `redactAnonymous` lives here: a client that had to work it out from
+ * `usernameLower` and `isProfilePrivate` would get it wrong somewhere, and a
+ * wrong link points at a 404. One nullable string, and the only rule a frontend
+ * needs is "render an anchor when it is not null".
+ *
+ * Null in three cases, all of them meaning "the name is still yours to read, but
+ * there is nowhere to go from it":
+ *
+ * - The profile is private. This does not withdraw the name — the contributor
+ *   chose to share these publicly and never asked to be unattributed — it only
+ *   removes the destination. Whether a name appears is `isAnonymous`, and that
+ *   is a separate decision the contributor made per resource.
+ * - The account has never claimed a username. Possible for a pre-migration row,
+ *   and for an owner who has not finished onboarding.
+ * - There is no contributor at all, from `redactAnonymous` or a deleted account.
+ */
+export function withProfilePath(
+  resource: ResourceWithRelations,
+): ResourceResponse {
+  // Returned as-is rather than with `contributor: null` forced in. A null
+  // contributor is a *meaningful* value — the account was deleted, or the post is
+  // anonymous — and it is already what `redactAnonymous` produced. Re-asserting
+  // it here would mean a row that simply had no contributor key came back
+  // looking like a redacted one.
+  if (!resource.contributor) return resource as ResourceResponse;
+
+  const { username, usernameLower, isProfilePrivate, ...summary } =
+    resource.contributor;
+
+  return {
+    ...resource,
+    contributor: {
+      ...summary,
+      // A contributor with no Clerk name is shown by the handle they claimed,
+      // in the case they chose. Never a placeholder: a byline reading "Shared by
+      // Anonymous" would sit right next to one reading "Shared anonymously",
+      // meaning two entirely different things.
+      name: resolveDisplayName({ name: summary.name, username }),
+      profilePath: resolveProfilePath({ usernameLower, isProfilePrivate }),
+    },
+  };
+}
+
+/**
+ * Redacts and resolves in one step, which is the order every read wants and the
+ * order that matters: `redactAnonymous` nulls the contributor, so running it
+ * after `withProfilePath` would resolve a display name for a row that is about
+ * to have its attribution withheld.
+ */
+export function toResourceResponse(
+  resource: ResourceWithRelations,
+  viewerId?: string,
+): ResourceResponse {
+  return withProfilePath(redactAnonymous(resource, viewerId));
+}

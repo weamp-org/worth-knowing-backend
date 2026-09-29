@@ -102,6 +102,7 @@ model User {
   anonymousByDefault Boolean @default(false)
 
   resources Resource[]
+  collections Collection[]
 }
 
 /// Every username that must not be claimable, whether or not anyone holds it.
@@ -159,6 +160,94 @@ model Resource {
   // conflicting in a unique index, so rows belonging to a deleted contributor
   // never block one another — which is right, since nobody can edit them.
   @@unique([contributorId, url])
+
+  collectionResources CollectionResource[]
+}
+
+/// A gathering of resources somebody chose to keep together.
+///
+/// A collection is a *curation*, not a folder: the owner is usually saving links
+/// other people shared, and the `why` on each resource is still its original
+/// contributor's. So the owner is deliberately not called `contributor` here —
+/// that name means "the person who wrote this" everywhere else in the schema, and
+/// a collection's owner writes none of the resources in it.
+///
+/// `description` is the curator's reason for the *grouping*, which is the same
+/// kind of judgment as a resource's `why` one level up: a titled list of links
+/// with no reasoning attached is the one thing this product should not render.
+/// Optional, because a plain folder is a legitimate thing to want.
+model Collection {
+  id          String   @id @default(cuid())
+  title       String   @db.VarChar(120)
+  description String?  @db.VarChar(500)
+
+  /// Gates the collection page, and nothing else.
+  ///
+  /// It does not re-attribute anything inside. A resource collected anonymously
+  /// is still redacted when the collection is public — see
+  /// `resources/resource-read.ts`, which both services share for that reason.
+  ///
+  /// Defaults to private, unlike `isProfilePrivate` and `isAnonymous`. Those gate
+  /// something that was already published; this gates something that has not.
+  /// Collecting is a personal act, and publishing it should be a separate
+  /// decision rather than a consequence of making the list.
+  isPrivate Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Cascading, which is the one relation here that does not use `SetNull` the
+  /// way `Resource.contributor` does. A contribution outlives its author because
+  /// its `why` is still worth reading and nobody can be named for it anyway. A
+  /// collection is different: it has no content of its own, only an arrangement
+  /// of somebody's, and with the account gone there is no curator to be curated
+  /// *by*. An ownerless collection could not be listed by any route, so `SetNull`
+  /// would strand rows rather than preserve anything.
+  ownerId String?
+  owner   User?   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  resources CollectionResource[]
+
+  // Serves the owner's own listing, `WHERE owner_id = ? ORDER BY created_at DESC,
+  // id DESC`, keyset-paginated. The `id` tiebreaker is in the index for the same
+  // reason it is in `Resource`'s: `createdAt` is not unique, and a cursor over a
+  // non-total order skips or repeats rows.
+  @@index([ownerId, createdAt(sort: Desc), id(sort: Desc)])
+}
+
+/// Which resources a collection holds.
+///
+/// An explicit join where `Resource.tags` is an implicit one, and the reason is
+/// ordering. Prisma cannot `orderBy` an implicit many-to-many, and "in the order
+/// I added them, newest first" is the only ordering this has — so the assignment
+/// needs to be a row that can be sorted.
+///
+/// The `addedAt` is that order. There is no `position` and no drag-and-drop
+/// reordering: a hand-ordered list is a feature nobody has asked for, and it
+/// would mean every reorder is a write to every row after it.
+model CollectionResource {
+  collectionId String
+  resourceId   String
+  addedAt      DateTime @default(now())
+
+  collection Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  resource   Resource   @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+  /// The same resource cannot be collected twice. This composite is also the
+  /// cursor target for `GET /collections/:id/resources`: a page's position is a
+  /// `(collectionId, resourceId)` pair, and since `collectionId` is already in
+  /// the path the opaque cursor only has to carry the resource id.
+  @@id([collectionId, resourceId])
+
+  // Serves the collection's own listing, `WHERE collection_id = ? ORDER BY
+  // added_at DESC, resource_id DESC`. `resourceId` is the tiebreaker because
+  // `addedAt` is not unique, and a keyset cursor over a non-total order skips or
+  // repeats rows.
+  @@index([collectionId, addedAt(sort: Desc), resourceId(sort: Desc)])
+
+  // Serves the reverse question: which of this resource's owner's collections
+  // already hold it. That is the "is this in a collection?" check on a resource
+  // page, and without this it would be a sequential scan of the whole join table.
+  @@index([resourceId])
 }
 
 /// Free-form and contributor-created. `name` is the display form as typed

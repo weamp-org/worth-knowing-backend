@@ -93,3 +93,34 @@ export function resolveDisplayName(
 ): string | null {
   return firstPresent(user.name, user.username);
 }
+
+/**
+ * Where to link a user row's name, or `null` when there is nowhere to go.
+ *
+ * One nullable path, resolved on the server, so a client has exactly one rule:
+ * render an anchor when it is a string. Every caller that showed a user would
+ * otherwise re-derive the same decision from two raw fields, and getting it
+ * wrong in one of them produces a link to a 404 rather than a wrong-looking page
+ * — which is exactly the kind of bug that survives review.
+ *
+ * Null in three cases, and none of them means the name is hidden:
+ *
+ * - The profile is private, so the page would not resolve for this viewer. The
+ *   name still reads; only the destination goes.
+ * - No username has been claimed, so `/u/:username` has nothing to match on.
+ * - There is no `usernameLower` at all on a pre-migration row.
+ *
+ * Whether a name is *shown* is a separate question, answered by `isAnonymous`
+ * and by the caller. Keeping the two apart is what stops "there is no link" from
+ * being misread as "this person is anonymous".
+ */
+export function resolveProfilePath(
+  user: Pick<
+    { usernameLower: string | null; isProfilePrivate: boolean },
+    'usernameLower' | 'isProfilePrivate'
+  >,
+): string | null {
+  if (user.isProfilePrivate || user.usernameLower === null) return null;
+
+  return `/u/${user.usernameLower}`;
+}
