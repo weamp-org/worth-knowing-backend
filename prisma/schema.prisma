@@ -13,6 +13,16 @@ enum UserRole {
   ADMIN
 }
 
+/// Why a username cannot be claimed, even by nobody right now.
+enum ReservedUsernameReason {
+  /// A word we would rather nobody hold: an app route, or a name the product
+  /// itself would be confused with.
+  RESERVED
+  /// A handle somebody claimed and later gave back. Held so the same person
+  /// cannot be pushed off it and have somebody else take it within minutes.
+  RELEASED
+}
+
 enum ResourceType {
   ARTICLE
   BOOK
@@ -35,10 +45,54 @@ enum AccessType {
 }
 
 model User {
-  id       String  @id
-  name     String
+  id String @id
+
+  /// Clerk-owned. Rewritten by `WebhooksService` on every Clerk event.
+  ///
+  /// Null when they have not set one, and deliberately not a placeholder.
+  /// Storing "Anonymous" here collided with the product's own anonymity feature:
+  /// a byline reading "Shared by Anonymous" sits next to one reading "Shared
+  /// anonymously", meaning two entirely different things. Every invented string is
+  /// also a claim we cannot back up.
+  ///
+  /// The display name is resolved on read instead — `name`, then the username
+  /// they claimed here. See `display-name.util.ts`, and note that `/share` gates
+  /// on having a username, so anybody with a contribution always has a fallback.
+  name     String?
   email    String  @unique
   imageUrl String?
+
+  /// The three fields above are owned by Clerk, not by us. `WebhooksService`
+  /// rewrites all three on every Clerk event, so nothing in this codebase writes
+  /// them locally — a local write would silently revert. Display name and avatar
+  /// are edited through Clerk's own profile UI.
+  ///
+  /// A username is deliberately *not* one of them. It is a product identity with
+  /// rules we want to enforce in a DTO — a character set, a length, a list of
+  /// words we will not issue — and Clerk's own username field enforces none of
+  /// those. It also means a profile can be resolved from this database alone,
+  /// with no Clerk API call on the request path of a public page.
+  ///
+  /// `username` is the form as typed ("AdaL"), `usernameLower` the normalized
+  /// identity and the only unique one — the same `name`/`slug` shape as `Tag`.
+  /// Both are null until claimed, and many users may be unclaimed at once, which
+  /// Postgres permits because it does not treat NULLs as conflicting.
+  username      String? @db.VarChar(24)
+  usernameLower String? @unique
+
+  bio String? @db.VarChar(280)
+
+  /// Gates the profile page, and nothing else.
+  ///
+  /// It deliberately does not re-attribute anything already shared. Whether a
+  /// contribution carries a name is a decision `ResourcesService.create` makes
+  /// once, at creation, and stores on the resource; this flag only controls
+  /// whether `/u/:username` resolves for anybody but its owner. A private
+  /// profile still shows "Shared by <name>" on the feed — the link is what goes
+  /// away.
+  isProfilePrivate Boolean @default(false)
+
+  createdAt DateTime @default(now())
 
   role UserRole @default(USER)
 
@@ -48,6 +102,18 @@ model User {
   anonymousByDefault Boolean @default(false)
 
   resources Resource[]
+}
+
+/// Every username that must not be claimable, whether or not anyone holds it.
+///
+/// Holding released handles is what stops `ada` from being given away, taken
+/// back by somebody else within the hour, and re-registered by the original
+/// owner into a profile that now says something they did not write. The primary
+/// key is the normalized form, so the check a claim does is one lookup.
+model ReservedUsername {
+  usernameLower String                  @id
+  reason        ReservedUsernameReason
+  createdAt     DateTime                @default(now())
 }
 
 model Resource {
@@ -71,7 +137,16 @@ model Resource {
 
   tags Tag[]
 
-  @@index([contributorId])
+  // Serves a profile's own listing, `WHERE contributor_id = ? ORDER BY
+  // created_at DESC, id DESC`. The `id` tiebreaker is in the index for the same
+  // reason it is in the ordering: `createdAt` is not unique, and a keyset cursor
+  // over a non-total order skips or repeats rows.
+  //
+  // This replaces a plain `@@index([contributorId])`, which could not serve that
+  // ordering — it would sort every one of the contributor's rows. Nothing else
+  // needed it either: the duplicate-URL check filters on `{ contributorId, url }`
+  // and `@@unique([contributorId, url])` below already covers that prefix.
+  @@index([contributorId, createdAt(sort: Desc), id(sort: Desc)])
   @@index([createdAt])
   @@index([type, createdAt])
   // One contributor cannot post the same link twice. This is deliberately

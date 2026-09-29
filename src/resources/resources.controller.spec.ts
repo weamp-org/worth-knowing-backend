@@ -86,9 +86,14 @@ describe('ResourcesController', () => {
   });
 
   describe('findAll', () => {
-    it('forwards every pagination argument and the viewer', async () => {
+    it('forwards every filter, the pagination arguments and the viewer', async () => {
       await controller.findAll(
-        { tag: 'machine-learning', limit: 10, cursor: 'Y2tz' },
+        {
+          tag: 'machine-learning',
+          limit: 10,
+          cursor: 'Y2tz',
+          contributor: 'adal',
+        },
         request,
       );
 
@@ -97,6 +102,7 @@ describe('ResourcesController', () => {
         10,
         'Y2tz',
         'user_1',
+        'adal',
       );
     });
 
@@ -108,6 +114,7 @@ describe('ResourcesController', () => {
         undefined,
         undefined,
         'user_1',
+        undefined,
       );
     });
 
@@ -117,6 +124,7 @@ describe('ResourcesController', () => {
       await controller.findAll({}, request);
 
       expect(mockResourcesService.findAll).toHaveBeenCalledWith(
+        undefined,
         undefined,
         undefined,
         undefined,

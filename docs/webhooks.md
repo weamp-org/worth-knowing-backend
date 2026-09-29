@@ -68,7 +68,21 @@ await this.prismaService.user.update({
 
 Only updates if the user already exists locally (the routing method checks existence before calling this handler). This prevents creating local records for Clerk users that were not auto-provisioned by `ClerkAuthGuard`.
 
-This is the only path that keeps Clerk-owned fields current. `ClerkAuthGuard` is create-only, so a profile image change reaches the database through here — Clerk emits `user.updated` when a user updates their avatar, and the new `imageUrl` is written with it. If webhooks are not wired up in an environment, stored images will go stale.
+This is the only path that keeps Clerk-owned fields current. `ClerkAuthGuard` is create-only, so a profile image change reaches the database through here — Clerk emits `user.updated` when a user updates their avatar, and the new `imageUrl` is written with it.
+
+**If webhooks are not reachable, nothing else will notice.** They do not
+throw at boot, and a request from Clerk that cannot connect produces no local
+signal at all — the only symptom is a display name that quietly stopped
+updating. Two mitigations:
+
+- `main.ts` warns at boot when `CLERK_WEBHOOK_SIGNING_SECRET` is missing or
+  still the `.env.local.example` placeholder. It cannot check that the endpoint
+  is reachable from Clerk's servers, so a stopped tunnel or an endpoint never
+  registered in the dashboard stays invisible.
+- `pnpm user:sync <clerk-user-id>` repairs one user by hand, writing the same
+  three fields from Clerk directly.
+
+See `docs/auth.md` for why the guard is create-only rather than self-refreshing.
 
 #### `user.deleted`
 

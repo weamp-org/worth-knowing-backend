@@ -9,6 +9,7 @@ import { Prisma } from '../generated/prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { TagsService } from '../tags/tags.service';
+import { resolveDisplayName } from '../users/display-name.util';
 import { UserRole } from '../generated/prisma/enums';
 import { CreateResourceDto } from './dtos/create-resource.dto';
 import { UpdateResourceDto } from './dtos/update-resource.dto';
@@ -20,7 +21,18 @@ import { DEFAULT_PAGE_SIZE } from './dtos/list-resources-query.dto';
  * is still returned, just without the attribution.
  */
 const resourceInclude = {
-  contributor: { select: { id: true, name: true, imageUrl: true } },
+  contributor: {
+    select: {
+      id: true,
+      name: true,
+      imageUrl: true,
+      // Read only to build `profilePath` and to resolve a display name. Neither
+      // reaches the response. See {@link withProfilePath}.
+      username: true,
+      usernameLower: true,
+      isProfilePrivate: true,
+    },
+  },
   tags: { orderBy: { name: 'asc' } },
 } as const;
 
@@ -34,9 +46,32 @@ const resourceOrderBy = [
   { id: 'desc' },
 ] satisfies Prisma.ResourceOrderByWithRelationInput[];
 
+/** A resource row as read, before any redaction. */
 type ResourceWithRelations = Prisma.ResourceGetPayload<{
   include: typeof resourceInclude;
 }>;
+
+/** The contributor fields that never reach the response. */
+type DerivedContributorFields =
+  | 'username'
+  | 'usernameLower'
+  | 'isProfilePrivate';
+
+/**
+ * A resource as it is returned, once redaction and `profilePath` are applied.
+ *
+ * Distinct from {@link ResourceWithRelations} because the contributor has been
+ * reshaped: the fields `profilePath` and the display name are derived from are
+ * gone, replaced by a resolved `name` and a path. Everything else is the same.
+ */
+type ResourceResponse = Omit<ResourceWithRelations, 'contributor'> & {
+  contributor:
+    | (Omit<
+        NonNullable<ResourceWithRelations['contributor']>,
+        DerivedContributorFields
+      > & { profilePath: string | null })
+    | null;
+};
 
 /**
  * Withholds the contributor from a resource shared anonymously.
@@ -63,6 +98,55 @@ function redactAnonymous(
   }
 
   return { ...resource, contributor: null, contributorId: null };
+}
+
+/**
+ * Resolves each contributor summary to the path a client should link to, or
+ * `null` when it should not link at all.
+ *
+ * The decision is made here rather than in the client for the same reason
+ * `redactAnonymous` lives here: a client that had to work it out from
+ * `usernameLower` and `isProfilePrivate` would get it wrong somewhere, and a
+ * wrong link points at a 404. One nullable string, and the only rule a frontend
+ * needs is "render an anchor when it is not null".
+ *
+ * Null in three cases, all of them meaning "the name is still yours to read, but
+ * there is nowhere to go from it":
+ *
+ * - The profile is private. This does not withdraw the name — the contributor
+ *   chose to share these publicly and never asked to be unattributed — it only
+ *   removes the destination. Whether a name appears is `isAnonymous`, and that
+ *   is a separate decision the contributor made per resource.
+ * - The account has never claimed a username. Possible for a pre-migration row,
+ *   and for an owner who has not finished onboarding.
+ * - There is no contributor at all, from `redactAnonymous` or a deleted account.
+ */
+function withProfilePath(resource: ResourceWithRelations): ResourceResponse {
+  // Returned as-is rather than with `contributor: null` forced in. A null
+  // contributor is a *meaningful* value — the account was deleted, or the post is
+  // anonymous — and it is already what `redactAnonymous` produced. Re-asserting
+  // it here would mean a row that simply had no contributor key came back
+  // looking like a redacted one.
+  if (!resource.contributor) return resource as ResourceResponse;
+
+  const { username, usernameLower, isProfilePrivate, ...summary } =
+    resource.contributor;
+
+  return {
+    ...resource,
+    contributor: {
+      ...summary,
+      // A contributor with no Clerk name is shown by the handle they claimed,
+      // in the case they chose. Never a placeholder: a byline reading "Shared by
+      // Anonymous" would sit right next to one reading "Shared anonymously",
+      // meaning two entirely different things.
+      name: resolveDisplayName({ name: summary.name, username }),
+      profilePath:
+        !isProfilePrivate && usernameLower !== null
+          ? `/u/${usernameLower}`
+          : null,
+    },
+  };
 }
 
 /**
@@ -203,14 +287,53 @@ export class ResourcesService {
     limit?: number,
     cursor?: string,
     viewerId?: string,
+    /**
+     * Restrict to one contributor, addressed by username.
+     *
+     * A username rather than the Clerk user id, because this is a public
+     * parameter on a `@Public()` route and the id is the primary key of every
+     * account on the site — filtering by it would be an enumeration surface.
+     */
+    contributorUsername?: string,
   ) {
     const take = limit ?? DEFAULT_PAGE_SIZE;
+
+    // `AND` rather than two ternaries into one object: tag and contributor are
+    // independent, and a profile page's listing uses the contributor alone while
+    // the feed uses the tag alone, but a caller may send both.
+    const where: Prisma.ResourceWhereInput = {
+      ...(tag ? { tags: { some: { slug: tag } } } : {}),
+      ...(contributorUsername
+        ? {
+            contributor: { usernameLower: contributorUsername },
+            /*
+             * Anonymous contributions are excluded from a *profile's* listing,
+             * for the same reason `ProfileResponseDto.resourcesCount` excludes
+             * them: a profile that listed them would disclose the existence of
+             * posts the contributor chose to withhold, and would show the `why`
+             * they wrote to explain a decision they asked not to be named for.
+             * That is the whole of what the anonymity control promises.
+             *
+             * Applied only when filtering by contributor. The global feed is a
+             * different thing — an anonymous post is public *content*, merely
+             * unattributed, and dropping it from the feed would remove something
+             * a reader was always allowed to see.
+             *
+             * The consequence is that a contributor cannot see their own
+             * anonymous posts on their profile. They can still find and edit
+             * them: the rows are unchanged, and the global feed still carries
+             * them.
+             */
+            isAnonymous: false,
+          }
+        : {}),
+    };
 
     let rows: ResourceWithRelations[];
 
     try {
       rows = await this.prisma.resource.findMany({
-        where: tag ? { tags: { some: { slug: tag } } } : undefined,
+        where: Object.keys(where).length > 0 ? where : undefined,
         orderBy: resourceOrderBy,
         take: take + 1,
         ...(cursor
@@ -233,7 +356,9 @@ export class ResourcesService {
     const last = items.at(-1);
 
     return {
-      items: items.map((row) => redactAnonymous(row, viewerId)),
+      items: items.map((row) =>
+        withProfilePath(redactAnonymous(row, viewerId)),
+      ),
       nextCursor: hasMore && last ? encodeCursor(last.id) : null,
     };
   }
@@ -246,7 +371,7 @@ export class ResourcesService {
 
     if (!resource) throw new NotFoundException(`Resource ${id} not found`);
 
-    return redactAnonymous(resource, viewerId);
+    return withProfilePath(redactAnonymous(resource, viewerId));
   }
 
   /**

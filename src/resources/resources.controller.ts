@@ -61,7 +61,8 @@ export class ResourcesController {
   @Get()
   @Public()
   @ApiOperation({
-    summary: 'List resources, newest first, optionally filtered by tag',
+    summary:
+      'List resources, newest first, optionally filtered by tag or by contributor username',
   })
   @ApiOkResponse({ type: PaginatedResourcesResponseDto })
   @ApiBadRequestResponse({ description: 'Invalid query parameter or cursor' })
@@ -74,6 +75,7 @@ export class ResourcesController {
       query.limit,
       query.cursor,
       getAuth(request).userId ?? undefined,
+      query.contributor,
     );
   }
 

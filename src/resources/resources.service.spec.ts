@@ -97,7 +97,13 @@ describe('ResourcesService', () => {
       id: 'res_1',
       title: 'Sapiens',
       contributorId: 'user_1',
-      contributor: { id: 'user_1', name: 'Ada', imageUrl: null },
+      contributor: {
+        id: 'user_1',
+        name: 'Ada',
+        imageUrl: null,
+        usernameLower: 'ada',
+        isProfilePrivate: false,
+      },
       isAnonymous: false,
       tags: [],
       ...over,
@@ -250,6 +256,198 @@ describe('ResourcesService', () => {
 
         await expect(service.isMine('missing', 'user_1')).resolves.toBe(false);
       });
+    });
+  });
+
+  describe('profilePath', () => {
+    const row = (over: Record<string, unknown> = {}) => ({
+      id: 'res_1',
+      title: 'Sapiens',
+      contributorId: 'user_1',
+      contributor: {
+        id: 'user_1',
+        name: 'Ada',
+        imageUrl: null,
+        usernameLower: 'ada',
+        isProfilePrivate: false,
+      },
+      isAnonymous: false,
+      tags: [],
+      ...over,
+    });
+
+    it('points at the profile for a public one', async () => {
+      prisma.resource.findUnique.mockResolvedValue(row());
+
+      const result = await service.findOne('res_1');
+
+      expect(result.contributor?.profilePath).toBe('/u/ada');
+    });
+
+    // Privacy here withdraws the destination, not the name. Whether a name
+    // appears is `isAnonymous`, a decision the contributor made per resource.
+    it('is null for a private profile but keeps the name attached', async () => {
+      prisma.resource.findUnique.mockResolvedValue(
+        row({
+          contributor: {
+            id: 'user_1',
+            name: 'Ada',
+            imageUrl: null,
+            usernameLower: 'ada',
+            isProfilePrivate: true,
+          },
+        }),
+      );
+
+      const result = await service.findOne('res_1', 'stranger');
+
+      expect(result.contributor?.profilePath).toBeNull();
+      expect(result.contributor?.name).toBe('Ada');
+    });
+
+    it('is null for an account that has not claimed a username', async () => {
+      prisma.resource.findUnique.mockResolvedValue(
+        row({
+          contributor: {
+            id: 'user_1',
+            name: 'Ada',
+            imageUrl: null,
+            usernameLower: null,
+            isProfilePrivate: false,
+          },
+        }),
+      );
+
+      const result = await service.findOne('res_1');
+
+      expect(result.contributor?.profilePath).toBeNull();
+    });
+
+    it('never reaches the response on an anonymous post', async () => {
+      prisma.resource.findUnique.mockResolvedValue(row({ isAnonymous: true }));
+
+      const result = await service.findOne('res_1', 'stranger');
+
+      expect(result.contributor).toBeNull();
+      // Nothing about the profile is left to correlate the post against.
+      expect(JSON.stringify(result)).not.toContain('ada');
+    });
+
+    it('drops the two fields it is derived from', async () => {
+      prisma.resource.findUnique.mockResolvedValue(row());
+
+      const result = await service.findOne('res_1');
+
+      expect(result.contributor).not.toHaveProperty('usernameLower');
+      expect(result.contributor).not.toHaveProperty('isProfilePrivate');
+    });
+
+    it('applies to every row in a page', async () => {
+      prisma.resource.findMany.mockResolvedValue([
+        row({ id: 'a' }),
+        row({ id: 'b' }),
+      ]);
+
+      const page = await service.findAll();
+
+      expect(
+        page.items.every((item) => item.contributor?.profilePath === '/u/ada'),
+      ).toBe(true);
+    });
+  });
+
+  describe('contributor filter', () => {
+    const row = (id: string) => ({
+      id,
+      contributorId: 'user_1',
+      contributor: null,
+      isAnonymous: false,
+      tags: [],
+    });
+
+    it('filters by contributor username', async () => {
+      prisma.resource.findMany.mockResolvedValue([row('a')]);
+
+      await service.findAll(undefined, undefined, undefined, undefined, 'ada');
+
+      expect(prisma.resource.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            contributor: { usernameLower: 'ada' },
+            isAnonymous: false,
+          },
+        }),
+      );
+    });
+
+    it('combines with a tag filter rather than replacing it', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll(
+        'evolution',
+        undefined,
+        undefined,
+        undefined,
+        'ada',
+      );
+
+      expect(prisma.resource.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            tags: { some: { slug: 'evolution' } },
+            contributor: { usernameLower: 'ada' },
+            isAnonymous: false,
+          },
+        }),
+      );
+    });
+
+    // Listing them would disclose the existence of posts the contributor chose
+    // to withhold, publish the `why` they wrote to justify an unattributed
+    // contribution, and disagree with `resourcesCount`, which already excludes
+    // them. A profile saying "1 contribution" above two cards is also just
+    // visibly wrong.
+    it('excludes anonymous contributions from a profile listing', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll(undefined, undefined, undefined, undefined, 'ada');
+
+      const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
+        [{ where: Record<string, unknown> }],
+      ];
+
+      expect(arg.where).toMatchObject({
+        contributor: { usernameLower: 'ada' },
+        isAnonymous: false,
+      });
+    });
+
+    // An anonymous post is public *content*, merely unattributed. Dropping it
+    // from the feed would remove something a reader was always allowed to see.
+    it('still shows anonymous contributions on the unfiltered feed', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll();
+
+      const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
+        [{ where?: Record<string, unknown> }],
+      ];
+
+      expect(arg.where).toBeUndefined();
+    });
+
+    it('passes no where clause at all when unfiltered', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll();
+
+      const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
+        [{ where?: unknown }],
+      ];
+
+      // `where: {}` would change the plan Prisma picks; an absent key is what the
+      // unfiltered feed has always sent.
+      expect(arg.where).toBeUndefined();
     });
   });
 
