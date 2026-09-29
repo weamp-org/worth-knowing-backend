@@ -10,6 +10,7 @@ import { Reflector } from '@nestjs/core';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { IS_PUBLIC_KEY } from '../public/public.decorator';
+import { clerkDisplayName } from '../users/display-name.util';
 
 @Injectable()
 export class ClerkAuthGuard implements CanActivate {
@@ -45,7 +46,11 @@ export class ClerkAuthGuard implements CanActivate {
     if (existingUser) return;
 
     const clerkUser = await clerkClient.users.getUser(clerkId);
-    const name = clerkUser.fullName ?? clerkUser.username ?? 'Anonymous';
+
+    // `null` when they have set no name, never a placeholder. See
+    // `display-name.util.ts` for why, and for the read-time resolution that
+    // supplies a display name instead.
+    const name = clerkDisplayName(clerkUser);
     const email =
       clerkUser.primaryEmailAddress?.emailAddress ??
       clerkUser.emailAddresses?.[0]?.emailAddress;

@@ -22,7 +22,7 @@ model Post {
 
   tags Tag[]
 
-  @@index([contributorId])
+  @@index([contributorId, createdAt(sort: Desc), id(sort: Desc)])
   @@index([createdAt])
 }
 ```
@@ -30,6 +30,18 @@ model Post {
 Name the relation **`contributor`**, not `author`. The person who shares a
 resource is not its author, and `authorId` on a resource reads as "who wrote
 this book". AGENTS.md uses _contributor_ throughout for this reason.
+
+**Index the composite that your listing actually queries.** `GET /resources` is
+keyset-paginated on `createdAt DESC, id DESC`, and a profile's listing filters
+by `contributorId` on top of that. A plain `@@index([contributorId])` finds the
+right rows and then sorts every one of them, so the index on `Resource` is
+`(contributorId, createdAt DESC, id DESC)`. The `id` tiebreaker belongs in the
+index for the same reason it is in the ordering: `createdAt` is not unique, and a
+cursor over a non-total order skips or repeats rows that share a timestamp.
+
+Note that a plain `@@index([contributorId])` is redundant when
+`@@unique([contributorId, url])` already exists, because the duplicate-URL check
+filters on `{ contributorId, url }` and the unique index covers that prefix.
 
 Make `contributorId` **nullable** with `onDelete: SetNull` rather than a plain
 required relation. The `user.deleted` webhook hard-deletes the local `User` row,

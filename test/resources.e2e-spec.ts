@@ -137,6 +137,150 @@ describe('Resources (e2e)', () => {
     });
   });
 
+  describe('contributor filter', () => {
+    it('folds the username in the query string, so casing does not matter', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/resources?contributor=AdaL')
+        .expect(200);
+
+      expect(prisma.resource.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            contributor: { usernameLower: 'adal' },
+            isAnonymous: false,
+          },
+        }),
+      );
+    });
+
+    it('combines with a tag filter', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/resources?tag=evolution&contributor=adal')
+        .expect(200);
+
+      expect(prisma.resource.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            tags: { some: { slug: 'evolution' } },
+            contributor: { usernameLower: 'adal' },
+            isAnonymous: false,
+          },
+        }),
+      );
+    });
+
+    // The profile listing and `resourcesCount` have to agree, and both have to
+    // leave withheld posts off the profile.
+    it('excludes anonymous contributions from a profile listing', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/resources?contributor=adal')
+        .expect(200);
+
+      const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
+        [{ where: Record<string, unknown> }],
+      ];
+
+      expect(arg.where).toMatchObject({ isAnonymous: false });
+    });
+
+    // An unclaimed handle has an empty page rather than a 400, matching how an
+    // unknown cursor behaves: the URL is reachable before anything is there.
+    it('rejects a username outside the character set rather than querying', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/resources?contributor=ada-lovelace')
+        .expect(400);
+    });
+
+    it('sends no where clause at all when unfiltered', async () => {
+      await request(app.getHttpServer()).get('/api/v1/resources').expect(200);
+
+      const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
+        [{ where?: unknown }],
+      ];
+
+      expect(arg.where).toBeUndefined();
+    });
+  });
+
+  describe('profilePath over HTTP', () => {
+    const withContributor = (contributor: unknown) => ({
+      id: 'res_1',
+      ...validBody,
+      isAnonymous: false,
+      contributorId: 'user_1',
+      contributor,
+    });
+
+    it('points a public profile at /u/:username', async () => {
+      prisma.resource.findUnique.mockResolvedValue(
+        withContributor({
+          id: 'user_1',
+          name: 'Ada Lovelace',
+          imageUrl: null,
+          usernameLower: 'adal',
+          isProfilePrivate: false,
+        }),
+      );
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/resources/res_1')
+        .expect(200);
+
+      expect(
+        (response.body as { contributor: { profilePath: string } }).contributor
+          .profilePath,
+      ).toBe('/u/adal');
+    });
+
+    // The name stays. Privacy withdraws the destination, not the attribution —
+    // whether a name appears is `isAnonymous`, a per-resource decision.
+    it('omits the link for a private profile without withholding the name', async () => {
+      prisma.resource.findUnique.mockResolvedValue(
+        withContributor({
+          id: 'user_1',
+          name: 'Ada Lovelace',
+          imageUrl: null,
+          usernameLower: 'adal',
+          isProfilePrivate: true,
+        }),
+      );
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/resources/res_1')
+        .expect(200);
+
+      const { contributor } = response.body as {
+        contributor: { name: string; profilePath: string | null };
+      };
+
+      expect(contributor.profilePath).toBeNull();
+      expect(contributor.name).toBe('Ada Lovelace');
+    });
+
+    it('leaves no username in the payload for a private profile', async () => {
+      prisma.resource.findUnique.mockResolvedValue(
+        withContributor({
+          id: 'user_1',
+          name: 'Ada Lovelace',
+          imageUrl: null,
+          usernameLower: 'adal',
+          isProfilePrivate: true,
+        }),
+      );
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/resources/res_1')
+        .expect(200);
+
+      // The two fields the path is derived from are not part of the response, so
+      // a client cannot reconstruct a link the server declined to make.
+      const body = response.body as { contributor: unknown };
+
+      expect(body.contributor).not.toHaveProperty('usernameLower');
+      expect(body.contributor).not.toHaveProperty('isProfilePrivate');
+    });
+  });
+
   describe('anonymity over HTTP', () => {
     const anonymous = {
       id: 'res_anon',

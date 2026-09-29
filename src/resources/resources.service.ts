@@ -10,77 +10,20 @@ import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TagsService } from '../tags/tags.service';
 import { UserRole } from '../generated/prisma/enums';
+import {
+  decodeCursor,
+  encodeCursor,
+  isCursorNotFound,
+} from '../pagination/cursor.util';
 import { CreateResourceDto } from './dtos/create-resource.dto';
 import { UpdateResourceDto } from './dtos/update-resource.dto';
-import { decodeCursor, encodeCursor } from './cursor.util';
 import { DEFAULT_PAGE_SIZE } from './dtos/list-resources-query.dto';
-
-/**
- * Read shape for the public API. A resource whose contributor has been deleted
- * is still returned, just without the attribution.
- */
-const resourceInclude = {
-  contributor: { select: { id: true, name: true, imageUrl: true } },
-  tags: { orderBy: { name: 'asc' } },
-} as const;
-
-/**
- * Newest first, with `id` as a tiebreaker. `createdAt` alone is not unique, and
- * without a total order a cursor can skip or repeat rows when several resources
- * share a timestamp — which they will, since `now()` has millisecond resolution.
- */
-const resourceOrderBy = [
-  { createdAt: 'desc' },
-  { id: 'desc' },
-] satisfies Prisma.ResourceOrderByWithRelationInput[];
-
-type ResourceWithRelations = Prisma.ResourceGetPayload<{
-  include: typeof resourceInclude;
-}>;
-
-/**
- * Withholds the contributor from a resource shared anonymously.
- *
- * Both the `contributor` object and the raw `contributorId` go, because
- * keeping the id would defeat the point: the same id appears on the person's
- * public contributions, so anyone comparing two posts could link the anonymous
- * one back to a name. Nothing is left to correlate on.
- *
- * The owner is not redacted from their own resource, which is what lets the
- * edit form load and pre-fill. A stranger presenting any token is still
- * redacted — only an exact `contributorId` match is let through.
- *
- * `isAnonymous` stays on the response so a client can tell an anonymous post
- * from one whose contributor was deleted. Those are different states and the
- * UI words them differently.
- */
-function redactAnonymous(
-  resource: ResourceWithRelations,
-  viewerId?: string,
-): ResourceWithRelations {
-  if (!resource.isAnonymous || resource.contributorId === viewerId) {
-    return resource;
-  }
-
-  return { ...resource, contributor: null, contributorId: null };
-}
-
-/**
- * Whether a Prisma failure is a bad cursor rather than a real fault.
- *
- * In practice Prisma 7 returns an empty page for a cursor whose row is gone,
- * which is the behaviour we want: a resource can be deleted between a client
- * reading a page and requesting the next, and a 400 there would be a spurious
- * error. This is a guard for the paths that do raise — P2025 for a missing
- * cursor row, P2023 for inconsistent column data — so they surface as a client
- * error rather than a 500 leaking driver text.
- */
-function isCursorNotFound(error: unknown): boolean {
-  return (
-    error instanceof Prisma.PrismaClientKnownRequestError &&
-    (error.code === 'P2025' || error.code === 'P2023')
-  );
-}
+import {
+  resourceInclude,
+  resourceOrderBy,
+  toResourceResponse,
+  type ResourceWithRelations,
+} from './resource-read';
 
 /** P2002: a unique index rejected the write. */
 function isUniqueViolation(error: unknown): boolean {
@@ -203,14 +146,53 @@ export class ResourcesService {
     limit?: number,
     cursor?: string,
     viewerId?: string,
+    /**
+     * Restrict to one contributor, addressed by username.
+     *
+     * A username rather than the Clerk user id, because this is a public
+     * parameter on a `@Public()` route and the id is the primary key of every
+     * account on the site — filtering by it would be an enumeration surface.
+     */
+    contributorUsername?: string,
   ) {
     const take = limit ?? DEFAULT_PAGE_SIZE;
+
+    // `AND` rather than two ternaries into one object: tag and contributor are
+    // independent, and a profile page's listing uses the contributor alone while
+    // the feed uses the tag alone, but a caller may send both.
+    const where: Prisma.ResourceWhereInput = {
+      ...(tag ? { tags: { some: { slug: tag } } } : {}),
+      ...(contributorUsername
+        ? {
+            contributor: { usernameLower: contributorUsername },
+            /*
+             * Anonymous contributions are excluded from a *profile's* listing,
+             * for the same reason `ProfileResponseDto.resourcesCount` excludes
+             * them: a profile that listed them would disclose the existence of
+             * posts the contributor chose to withhold, and would show the `why`
+             * they wrote to explain a decision they asked not to be named for.
+             * That is the whole of what the anonymity control promises.
+             *
+             * Applied only when filtering by contributor. The global feed is a
+             * different thing — an anonymous post is public *content*, merely
+             * unattributed, and dropping it from the feed would remove something
+             * a reader was always allowed to see.
+             *
+             * The consequence is that a contributor cannot see their own
+             * anonymous posts on their profile. They can still find and edit
+             * them: the rows are unchanged, and the global feed still carries
+             * them.
+             */
+            isAnonymous: false,
+          }
+        : {}),
+    };
 
     let rows: ResourceWithRelations[];
 
     try {
       rows = await this.prisma.resource.findMany({
-        where: tag ? { tags: { some: { slug: tag } } } : undefined,
+        where: Object.keys(where).length > 0 ? where : undefined,
         orderBy: resourceOrderBy,
         take: take + 1,
         ...(cursor
@@ -233,7 +215,7 @@ export class ResourcesService {
     const last = items.at(-1);
 
     return {
-      items: items.map((row) => redactAnonymous(row, viewerId)),
+      items: items.map((row) => toResourceResponse(row, viewerId)),
       nextCursor: hasMore && last ? encodeCursor(last.id) : null,
     };
   }
@@ -246,7 +228,7 @@ export class ResourcesService {
 
     if (!resource) throw new NotFoundException(`Resource ${id} not found`);
 
-    return redactAnonymous(resource, viewerId);
+    return toResourceResponse(resource, viewerId);
   }
 
   /**

@@ -29,9 +29,31 @@ export class ContributorSummaryDto {
    */
   id: string;
 
-  name: string;
+  /**
+   * The Clerk name, or failing that the handle they claimed here.
+   *
+   * Never a placeholder. Null cannot occur for a contributor in practice —
+   * `/share` is gated on holding a handle, so the fallback always resolves.
+   * @example 'Ada Lovelace'
+   */
+  name: string | null;
 
   imageUrl: string | null;
+
+  /**
+   * Where to link this name, computed by the server.
+   *
+   * `null` when there is nowhere to go: the profile is private, or the account
+   * has not claimed a username yet. It is never `null` because the name should be
+   * hidden — that is what a null `contributor` means, and it is a different
+   * decision the contributor made per resource.
+   *
+   * Present as a resolved path rather than as the two fields it is derived from
+   * so a client cannot get the rule wrong and link to a page that 404s. Render
+   * an anchor when this is a string, plain text when it is null.
+   * @example '/u/adal'
+   */
+  profilePath: string | null;
 }
 
 export class ResourceResponseDto {

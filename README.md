@@ -7,6 +7,8 @@ NestJS 11 API for Worth Knowing, with Clerk authentication, Prisma ORM, role-bas
 - **Authentication** — Clerk-powered via `@clerk/express` with global middleware, configurable guards, and auto-provisioning of local user records on first sign-in
 - **Authorization** — Role-based access control with `@Roles()` decorator and `RolesGuard` (`USER` / `ADMIN` roles)
 - **Database** — Prisma v7 with PostgreSQL via `@prisma/adapter-pg`, auto-generated typed client, migration workflow
+- **Resources** — Share a specific resource with a `why`, plus free-form tags, anonymous sharing, and keyset-paginated browsing
+- **Collections** — Gather resources into a titled, optionally described list; private by default, curated from anything on the site
 - **REST API** — Global `/api/v1` prefix, users CRUD scaffold, `ValidationPipe` with whitelist/transform (with implicit conversion)
 - **Webhooks** — Clerk webhook handler for `user.created` / `user.updated` / `user.deleted` events with signature verification
 - **Rate Limiting** — `@nestjs/throttler`, 100 requests/min per user
@@ -104,43 +106,64 @@ worth-knowing-backend/
 ├── compose.yaml                    # Docker Compose (PostgreSQL 18)
 ├── prisma.config.ts                # Prisma config (dotenv + defineConfig)
 ├── prisma/
-│   ├── schema.prisma               # Database schema (User model, UserRole enum)
+│   ├── schema.prisma               # Database schema (User, Resource, Tag, Collection)
 │   └── migrations/                 # Migration history
 ├── src/
 │   ├── main.ts                     # Entry point (global prefix, Clerk, CORS, Swagger, ValidationPipe)
 │   ├── app.module.ts               # Root module (imports all features)
 │   ├── app.controller.ts           # Root controller (GET /api/v1 health)
 │   ├── app.service.ts              # Root service
+│   ├── validation.ts               # Shared ValidationPipe options
 │   ├── clerk-auth/
-│   │   └── clerk-auth.guard.ts     # Clerk authentication guard
+│   │   ├── clerk-auth.guard.ts     # Clerk authentication guard
+│   │   └── current-user.decorator.ts # @CurrentUserId()
 │   ├── public/
 │   │   └── public.decorator.ts     # @Public() — bypass auth on routes
 │   ├── roles/
 │   │   ├── roles.decorator.ts      # @Roles() — require specific roles
 │   │   └── roles.guard.ts          # Roles authorization guard
+│   ├── pagination/
+│   │   └── cursor.util.ts          # Opaque keyset cursor encode/decode
 │   ├── logging/
-│   │   ├── pino.config.ts         # Pino configuration (structured JSON, redaction, serializers)
-│   │   ├── logging.middleware.ts  # Request ID propagation to response header
-│   │   └── routes.ts              # ALL_ROUTES wildcard shared by both middlewares
+│   │   ├── pino.config.ts          # Pino configuration (structured JSON, redaction, serializers)
+│   │   ├── logging.middleware.ts   # Request ID propagation to response header
+│   │   └── routes.ts               # ALL_ROUTES wildcard shared by both middlewares
 │   ├── filters/
 │   │   └── global-exception.filter.ts # Global exception filter with Prisma error translation
 │   ├── prisma/
 │   │   ├── prisma.module.ts        # Global Prisma module
 │   │   └── prisma.service.ts       # PrismaClient with adapter-pg
+│   ├── resources/
+│   │   ├── resources.module.ts
+│   │   ├── resources.controller.ts # /api/v1/resources
+│   │   ├── resources.service.ts
+│   │   ├── resource-read.ts        # Shared read shape, redaction, profilePath
+│   │   └── dtos/
+│   ├── tags/
+│   │   ├── tags.module.ts
+│   │   ├── tags.controller.ts      # /api/v1/tags
+│   │   ├── tags.service.ts
+│   │   ├── slugify.util.ts
+│   │   └── dtos/
+│   ├── collections/
+│   │   ├── collections.module.ts
+│   │   ├── collections.controller.ts # /api/v1/collections
+│   │   ├── collections.service.ts
+│   │   └── dtos/
 │   ├── users/
 │   │   ├── users.module.ts
-│   │   ├── users.controller.ts     # /api/v1/users/me/settings (only)
+│   │   ├── users.controller.ts     # /api/v1/users/me/* and /api/v1/users/:username
 │   │   ├── users.service.ts
+│   │   ├── username.util.ts
+│   │   ├── display-name.util.ts    # Display name, profilePath resolution
 │   │   └── dtos/
-│   │       ├── update-my-settings.dto.ts
-│   │       └── user-response.dto.ts
 │   └── webhooks/
 │       ├── webhooks.module.ts
 │       ├── webhooks.controller.ts  # POST /api/v1/webhooks/clerk
 │       └── webhooks.service.ts     # Clerk webhook event handlers
 ├── test/
 │   ├── jest-e2e.json               # E2E Jest config
-│   └── app.e2e-spec.ts
+│   └── *.e2e-spec.ts
 ├── .husky/                         # Git hooks (created on pnpm install)
 └── secrets/                        # Docker secrets (gitignored, see secrets/*.txt.example)
 ```
@@ -181,21 +204,31 @@ The project uses two env files loaded in order: `.env.local` (local overrides, g
 
 All endpoints are prefixed with `/api/v1`.
 
-| Method   | Path                  | Auth                   | Description                                            |
-| -------- | --------------------- | ---------------------- | ------------------------------------------------------ |
-| `GET`    | `/`                   | Public                 | Service health                                         |
-| `GET`    | `/tags`               | Public                 | Search tags                                            |
-| `PATCH`  | `/tags/:id`           | Admin only             | Rename a tag                                           |
-| `DELETE` | `/tags/:id`           | Admin only             | Delete an unused tag                                   |
-| `GET`    | `/resources`          | Public                 | List resources                                         |
-| `GET`    | `/resources/:id`      | Public                 | One resource                                           |
-| `GET`    | `/resources/:id/mine` | Authenticated          | Did you contribute it                                  |
-| `POST`   | `/resources`          | Authenticated          | Share a resource (409 if you already shared that link) |
-| `PATCH`  | `/resources/:id`      | Contributor or admin   | Update a resource                                      |
-| `DELETE` | `/resources/:id`      | Contributor or admin   | Delete a resource                                      |
-| `GET`    | `/users/me/settings`  | Authenticated          | Your own settings                                      |
-| `PATCH`  | `/users/me/settings`  | Authenticated          | Update your settings                                   |
-| `POST`   | `/webhooks/clerk`     | Public (skip throttle) | Clerk webhook events                                   |
+| Method   | Path                                     | Auth                   | Description                                            |
+| -------- | ---------------------------------------- | ---------------------- | ------------------------------------------------------ |
+| `GET`    | `/`                                      | Public                 | Service health                                         |
+| `GET`    | `/tags`                                  | Public                 | Search tags                                            |
+| `PATCH`  | `/tags/:id`                              | Admin only             | Rename a tag                                           |
+| `DELETE` | `/tags/:id`                              | Admin only             | Delete an unused tag                                   |
+| `GET`    | `/resources`                             | Public                 | List resources                                         |
+| `GET`    | `/resources/:id`                         | Public                 | One resource                                           |
+| `GET`    | `/resources/:id/mine`                    | Authenticated          | Did you contribute it                                  |
+| `POST`   | `/resources`                             | Authenticated          | Share a resource (409 if you already shared that link) |
+| `PATCH`  | `/resources/:id`                         | Contributor or admin   | Update a resource                                      |
+| `DELETE` | `/resources/:id`                         | Contributor or admin   | Delete a resource                                      |
+| `GET`    | `/collections/me`                        | Authenticated          | Your own collections                                   |
+| `GET`    | `/collections/:id`                       | Public                 | One collection (404 if private and not yours)          |
+| `GET`    | `/collections/:id/resources`             | Public                 | A collection's contents, newest collected first        |
+| `POST`   | `/collections`                           | Authenticated          | Create a collection (private unless you say otherwise) |
+| `PATCH`  | `/collections/:id`                       | Owner or admin         | Update a collection                                    |
+| `DELETE` | `/collections/:id`                       | Owner or admin         | Delete a collection                                    |
+| `POST`   | `/collections/:id/resources`             | Owner                  | Add a resource (idempotent)                            |
+| `DELETE` | `/collections/:id/resources/:resourceId` | Owner                  | Remove a resource from a collection                    |
+| `GET`    | `/users/me/settings`                     | Authenticated          | Your own settings                                      |
+| `GET`    | `/users/me/profile`                      | Authenticated          | Your own profile                                       |
+| `PATCH`  | `/users/me/profile`                      | Authenticated          | Update your profile                                    |
+| `GET`    | `/users/:username`                       | Public                 | Somebody's public profile                              |
+| `POST`   | `/webhooks/clerk`                        | Public (skip throttle) | Clerk webhook events                                   |
 
 The template's `POST /users`, `GET /users`, `GET /users/:id`, `PATCH
 /users/:id` and `DELETE /users/:id` were all removed.
@@ -285,6 +318,45 @@ the only self-service correction the product offers. There is no separate
 the resource editable — detaching the contributor outright would only take away
 the author's ability to fix a typo or un-share.
 
+### Collections
+
+A collection is a titled, optionally described gathering of resources somebody
+chose to keep together. The owner is usually saving links _other people_ shared,
+and each resource keeps its own contributor's byline — which is why the relation
+is `owner`, not `contributor`.
+
+They are **private by default**. That is the opposite of `isProfilePrivate` and
+`isAnonymous`, and deliberately so: those gate something already published, while
+this gates something that has not been. Collecting is a personal act, and
+publishing it should be a separate decision rather than a side effect of making
+the list. A private collection is a **404 for anyone but its owner** — never a
+403, which would confirm it exists.
+
+An **optional description**, because a public collection without one is a titled
+list of other people's links with no reasoning attached, and reasoning is the
+whole product. It is where the curator's reason for the _grouping_ lives, the
+same judgment as a resource's `why` one level up.
+
+Three things that are not obvious from the routes:
+
+- **Making a collection public does not deanonymize anything inside it.** The
+  contents go through the same redaction as any public resource read, via
+  `resources/resource-read.ts`, which is why that file is shared rather than
+  copied. Worth knowing: it does give an anonymous resource a second stable
+  URL.
+- **Editing a collection admits an admin; curating one does not.** `PATCH` and
+  `DELETE` are owner-or-admin because a public collection is public content.
+  Adding a resource to somebody's list is owner-only — there is no content
+  reason for an admin to arrange somebody's reading list.
+- **Any resource can be collected, not only your own.** A collection of only
+  your own posts would be a worse version of your profile page.
+
+Contents are keyset-paginated over `CollectionResource` ordered by `addedAt`,
+not over `Resource` by its own `createdAt` — a collection needs the order things
+were _collected_, not the order they were _shared_. That needs a compound cursor,
+because `resourceId` alone is not unique. See
+[docs/collections.md](docs/collections.md) for the full walkthrough.
+
 ## Auth model
 
 Worth Knowing implements a layered auth strategy:
@@ -299,6 +371,7 @@ See [docs/auth.md](docs/auth.md) for a detailed walkthrough.
 ## Development
 
 - **Add a new resource** — See [docs/new-resource.md](docs/new-resource.md) for a step-by-step guide
+- **Collections** — See [docs/collections.md](docs/collections.md) for the API, the visibility rules, and why the anonymity redaction is shared
 - **Database changes** — Edit `prisma/schema.prisma`, run `pnpm prisma migrate dev`, then `pnpm prisma generate`
 - **Testing** — See [docs/testing.md](docs/testing.md) for patterns and conventions
 - **Logging** — See [docs/logging.md](docs/logging.md) for the middleware route pattern, `originalUrl` vs `req.url`, and known limitations
