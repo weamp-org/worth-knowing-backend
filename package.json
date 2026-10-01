@@ -27,6 +27,7 @@
     "user:set-role": "bash scripts/user-set-role.sh",
     "user:sync": "ts-node scripts/user-sync.ts",
     "seed:reserved-usernames": "ts-node scripts/seed-reserved-usernames.ts | pnpm exec prisma db execute --stdin",
+    "seed:resources": "ts-node scripts/seed-resources.ts | pnpm exec prisma db execute --stdin",
     "postinstall": "prisma generate",
     "prepare": "node .husky/install.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"

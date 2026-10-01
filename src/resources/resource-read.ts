@@ -40,6 +40,10 @@ export const resourceInclude = {
     },
   },
   tags: { orderBy: { name: 'asc' } },
+  // Never redacted and never per-viewer: "how many people saved this" is a
+  // public signal, and it belongs on every resource response so the feed, a
+  // collection's contents and the saved list all show it without a second query.
+  _count: { select: { savedResources: true } },
 } as const;
 
 /**
@@ -70,13 +74,24 @@ type DerivedContributorFields =
  * reshaped: the fields `profilePath` and the display name are derived from are
  * gone, replaced by a resolved `name` and a path. Everything else is the same.
  */
-export type ResourceResponse = Omit<ResourceWithRelations, 'contributor'> & {
+export type ResourceResponse = Omit<
+  ResourceWithRelations,
+  'contributor' | '_count'
+> & {
   contributor:
     | (Omit<
         NonNullable<ResourceWithRelations['contributor']>,
         DerivedContributorFields
       > & { profilePath: string | null })
     | null;
+  /**
+   * How many people saved this resource. Public, unlike every other field here.
+   *
+   * A signal of interest rather than of quality — it says people came back for
+   * it, not that it is the best one here — which is why it is on the public
+   * response rather than hidden behind a signed-in read.
+   */
+  savedCount: number;
 };
 
 /**
@@ -130,18 +145,27 @@ export function redactAnonymous(
 export function withProfilePath(
   resource: ResourceWithRelations,
 ): ResourceResponse {
-  // Returned as-is rather than with `contributor: null` forced in. A null
-  // contributor is a *meaningful* value — the account was deleted, or the post is
-  // anonymous — and it is already what `redactAnonymous` produced. Re-asserting
-  // it here would mean a row that simply had no contributor key came back
-  // looking like a redacted one.
-  if (!resource.contributor) return resource as ResourceResponse;
+  // `_count` is a Prisma artefact, not part of the resource. It is flattened to
+  // a single `savedCount` here for the same reason the contributor's raw fields
+  // are replaced with a resolved `name` and `profilePath`: the shape a client
+  // sees is shaped deliberately, rather than being whatever the query happened to
+  // select.
+  const { _count, ...fields } = resource;
+
+  // Returned with no contributor forced in. A null contributor is a
+  // *meaningful* value — the account was deleted, or the post is anonymous — and
+  // it is already what `redactAnonymous` produced. Re-asserting it here would
+  // mean a row that simply had no contributor key came back looking like a
+  // redacted one.
+  if (!resource.contributor)
+    return { ...fields, savedCount: _count.savedResources } as ResourceResponse;
 
   const { username, usernameLower, isProfilePrivate, ...summary } =
     resource.contributor;
 
   return {
-    ...resource,
+    ...fields,
+    savedCount: _count.savedResources,
     contributor: {
       ...summary,
       // A contributor with no Clerk name is shown by the handle they claimed,
