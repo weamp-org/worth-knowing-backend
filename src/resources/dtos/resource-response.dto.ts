@@ -100,6 +100,20 @@ export class ResourceResponseDto {
    * @example 12
    */
   savedCount: number;
+
+  /**
+   * How many comments this resource has.
+   *
+   * Public, for the same reason as `savedCount`. A resource page shows the count
+   * to prompt the discussion whether or not the reader has signed in — the
+   * comment list itself is public too.
+   *
+   * On the resource response rather than only on the comments route so a page can
+   * render "3 comments" and a link to them without a second request, the way
+   * `savedCount` is.
+   * @example 3
+   */
+  commentCount: number;
 }
 
 /** One page of `GET /api/v1/resources`. */

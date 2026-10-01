@@ -43,7 +43,12 @@ export const resourceInclude = {
   // Never redacted and never per-viewer: "how many people saved this" is a
   // public signal, and it belongs on every resource response so the feed, a
   // collection's contents and the saved list all show it without a second query.
-  _count: { select: { savedResources: true } },
+  //
+  // `comments` is here for the same reason and not because anything reads the
+  // bodies on this path — the count is what lets a resource page show "3 comments"
+  // and prompt the discussion before anyone opens it. Discussion is public
+  // content, so the count is public too.
+  _count: { select: { savedResources: true, comments: true } },
 } as const;
 
 /**
@@ -92,6 +97,14 @@ export type ResourceResponse = Omit<
    * response rather than hidden behind a signed-in read.
    */
   savedCount: number;
+  /**
+   * How many comments this resource has.
+   *
+   * Public and never redacted, on the same reasoning as `savedCount`: the
+   * discussion is part of the public surface of the resource, and a page that
+   * renders comments already has this number in hand.
+   */
+  commentCount: number;
 };
 
 /**
@@ -158,7 +171,11 @@ export function withProfilePath(
   // mean a row that simply had no contributor key came back looking like a
   // redacted one.
   if (!resource.contributor)
-    return { ...fields, savedCount: _count.savedResources } as ResourceResponse;
+    return {
+      ...fields,
+      savedCount: _count.savedResources,
+      commentCount: _count.comments,
+    } as ResourceResponse;
 
   const { username, usernameLower, isProfilePrivate, ...summary } =
     resource.contributor;
@@ -166,6 +183,7 @@ export function withProfilePath(
   return {
     ...fields,
     savedCount: _count.savedResources,
+    commentCount: _count.comments,
     contributor: {
       ...summary,
       // A contributor with no Clerk name is shown by the handle they claimed,

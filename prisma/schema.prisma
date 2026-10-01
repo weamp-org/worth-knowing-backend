@@ -104,6 +104,7 @@ model User {
   resources Resource[]
   collections Collection[]
   savedResources SavedResource[]
+  comments Comment[]
 }
 
 /// Every username that must not be claimable, whether or not anyone holds it.
@@ -164,6 +165,7 @@ model Resource {
 
   collectionResources CollectionResource[]
   savedResources SavedResource[]
+  comments Comment[]
 }
 
 /// A gathering of resources somebody chose to keep together.
@@ -300,4 +302,78 @@ model SavedResource {
   // far more often than any one person's saved list. Without this, counting
   // savers for a page of resources is a sequential scan per row.
   @@index([resourceId])
+}
+
+/// A remark on a resource, by somebody who is not its contributor.
+///
+/// The first free-text, public, attributable thing a person can write here. Every
+/// other contribution on this site is a link plus a `why`, so the claim is
+/// checkable against the thing it claims to describe. A comment has no such
+/// anchor — it is prose about a link, under a URL that gets shared — which is why
+/// reporting and admin removal are built alongside it rather than after it, and
+/// why there is no karma here to be farmed.
+///
+/// Deliberately *not* a like/dislike pair. There is no ranking on this site for a
+/// vote to act on — the feed is chronological by choice, see `docs/saved.md` — so
+/// a downvote would be a punishment signal with no mechanical function. The job a
+/// downvote actually does, marking something for removal, is a report.
+model Comment {
+  id         String   @id @default(cuid())
+  body       String   @db.VarChar(2000)
+  createdAt  DateTime @default(now())
+
+  /// Cascading, unlike the author relation below: a comment on a resource that no
+  /// longer exists has no referent, and deleting a resource is a hard delete for
+  /// everybody at once rather than a withdrawal.
+  resourceId String
+  resource   Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+  /// Nullable and `SetNull`, like `Resource.contributor` and for the same reason:
+  /// a comment is somebody's words, and the reasoning that a contribution outlives
+  /// its author because its `why` is still worth reading applies just as much here.
+  /// Clerk deletes accounts on its own schedule, so this is a path that really
+  /// happens rather than a hypothetical one. A response renders `author: null` as
+  /// `[removed]` rather than dropping the row.
+  ///
+  /// Never `Cascade`: deleting an account would take every remark with it, which
+  /// is the opposite of what a deleted contributor's resources do.
+  authorId String?
+  author   User?    @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  /// One level of reply, and one level only.
+  ///
+  /// Reddit's actual reply tree is the thing being declined here, not because
+  /// conversation does not deserve replies — "I disagree with the comment above" is
+  /// the most common thing anybody wants to say — but because a tree needs a cursor
+  /// that carries a materialised path, and "load more" then has to fetch children of
+  /// comments that may not be on screen. Every list in this schema is a keyset page
+  /// over `(createdAt, id)`; a tree would mean rewriting that primitive for a depth
+  /// nobody has asked for.
+  ///
+  /// So replies are stored *flat* and read in the same chronological order as
+  /// everything else, with the parent's text rendered as a quote above the reply.
+  /// The row shape and the cursor are unchanged from an unthreaded list; only the
+  /// rendering differs. A deeper tree, or no replies at all, is both still reachable
+  /// without a breaking change.
+  parentId String?
+  parent   Comment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: SetNull)
+  replies  Comment[] @relation("CommentReplies")
+
+  // Serves the listing, `WHERE resource_id = ? ORDER BY created_at DESC, id DESC`,
+  // keyset-paginated like every other list here. The `id` tiebreaker is in the index
+  // for the same reason it is everywhere else: `createdAt` is not unique, and a
+  // keyset cursor over a non-total order skips or repeats rows.
+  //
+  // This also covers `resourceId` on its own, so the public `commentCount` on
+  // `ResourceResponseDto` — a `_count` grouped by this column — needs no index of
+  // its own. The same prefix that made `@@index([contributorId])` redundant in
+  // `Resource` applies here.
+  @@index([resourceId, createdAt(sort: Desc), id(sort: Desc)])
+
+  // Serves the `SetNull` above. Postgres does not index the referencing side of a
+  // foreign key, so removing a parent comment with replies scans the whole table
+  // without this. Comments are the largest table this schema is likely to grow —
+  // every resource can have many, unlike collections or saves — so the scan is the
+  // real cost rather than a hypothetical one.
+  @@index([parentId])
 }

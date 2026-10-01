@@ -381,6 +381,32 @@ wrote. A join row records only that this owner chose this resource for this
 list, and deleting the list is the owner withdrawing their own arrangement. The
 resources inside keep their own attribution and are untouched.
 
+### Comments
+
+`Comment(id, resourceId, authorId, parentId, body, createdAt)` is a remark on a
+resource. Migration `20261001083312_add_comment_model`.
+
+Three foreign keys, three different delete rules, each for a stated reason:
+
+- `resourceId` **cascades.** A comment on a resource that no longer exists has no
+  referent, and deleting a resource is a hard delete for everybody at once.
+- `authorId` is **nullable and sets null**, like `Resource.contributor`. A comment
+  is somebody's words and outlives its author for the same reason a contribution
+  does; the response renders a null author as `[removed]`. Clerk deletes accounts on
+  its own schedule, so this path really happens.
+- `parentId` **sets null**, so deleting a comment drops the quote on its replies
+  rather than cascading other people's words away.
+
+`@@index([resourceId, createdAt(sort: Desc), id(sort: Desc)])` serves the listing
+and, as a prefix, the public `commentCount` on `ResourceResponseDto` — which is why
+there is no separate `@@index([resourceId])` here, unlike `SavedResource`.
+
+`@@index([parentId])` exists because Postgres does not index the referencing side
+of a foreign key. Without it, removing a parent comment scans the whole table.
+
+Deliberately **not** a like/dislike pair, and deliberately **not** a reply tree. See
+[comments.md](./comments.md).
+
 ### Granting ADMIN
 
 `UserRole` has **no write path in the API** — no endpoint can change a role, so
