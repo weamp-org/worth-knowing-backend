@@ -106,6 +106,9 @@ describe('ResourcesService', () => {
       },
       isAnonymous: false,
       tags: [],
+      // `resourceInclude` selects it, so every row the mapper reads carries it.
+      // Without it `withProfilePath` throws reading `_count.savedResources`.
+      _count: { savedResources: 0 },
       ...over,
     });
 
@@ -273,6 +276,9 @@ describe('ResourcesService', () => {
       },
       isAnonymous: false,
       tags: [],
+      // `resourceInclude` selects it, so every row the mapper reads carries it.
+      // Without it `withProfilePath` throws reading `_count.savedResources`.
+      _count: { savedResources: 0 },
       ...over,
     });
 
@@ -363,6 +369,7 @@ describe('ResourcesService', () => {
       contributor: null,
       isAnonymous: false,
       tags: [],
+      _count: { savedResources: 0 },
     });
 
     it('filters by contributor username', async () => {
@@ -564,6 +571,7 @@ describe('ResourcesService', () => {
         id: 'res_1',
         contributorId: 'user_1',
         isAnonymous: false,
+        _count: { savedResources: 0 },
       });
       prisma.resource.update.mockResolvedValue({ id: 'res_1' });
       prisma.resource.findFirst.mockClear();
@@ -578,6 +586,7 @@ describe('ResourcesService', () => {
         id: 'res_1',
         contributorId: 'user_1',
         isAnonymous: false,
+        _count: { savedResources: 0 },
       });
       prisma.resource.findFirst.mockResolvedValue({ id: 'res_2' });
 
@@ -596,6 +605,7 @@ describe('ResourcesService', () => {
         id: 'res_1',
         contributorId: 'user_1',
         isAnonymous: false,
+        _count: { savedResources: 0 },
       });
       prisma.resource.update.mockResolvedValue({ id: 'res_1' });
 
@@ -620,6 +630,7 @@ describe('ResourcesService', () => {
         id: 'res_1',
         contributorId: 'user_1',
         isAnonymous: false,
+        _count: { savedResources: 0 },
       });
       prisma.resource.update.mockRejectedValue(
         new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
@@ -635,7 +646,14 @@ describe('ResourcesService', () => {
   });
 
   describe('findAll', () => {
-    const row = (id: string) => ({ id, createdAt: new Date() });
+    // Deliberately minimal — these tests are about pagination arithmetic, not the
+    // response shape. `_count` is still needed because every row read goes
+    // through `toResourceResponse`.
+    const row = (id: string) => ({
+      id,
+      createdAt: new Date(),
+      _count: { savedResources: 0 },
+    });
 
     it('orders newest first with id as a tiebreaker', async () => {
       prisma.resource.findMany.mockResolvedValue([]);
@@ -769,11 +787,16 @@ describe('ResourcesService', () => {
 
   describe('findOne', () => {
     it('returns the resource when found', async () => {
-      prisma.resource.findUnique.mockResolvedValue({ id: 'res_1' });
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        _count: { savedResources: 0 },
+      });
 
       const result = await service.findOne('res_1');
 
-      expect(result).toEqual({ id: 'res_1' });
+      // `savedCount` is flattened out of `_count`, so a row that only carried an
+      // id still comes back with it.
+      expect(result).toEqual({ id: 'res_1', savedCount: 0 });
     });
 
     it('throws NotFoundException when missing', async () => {
@@ -791,6 +814,9 @@ describe('ResourcesService', () => {
       id: 'res_1',
       contributorId: userId,
       isAnonymous: false,
+      // The ownership guard reads this row through `toResourceResponse`, so even
+      // a deliberately partial fixture has to carry the selected count.
+      _count: { savedResources: 0 },
     });
 
     it('updates an existing resource', async () => {
@@ -818,6 +844,7 @@ describe('ResourcesService', () => {
         id: 'res_1',
         contributorId: 'user_1',
         isAnonymous: true,
+        _count: { savedResources: 0 },
       });
       prisma.resource.update.mockResolvedValue({ id: 'res_1' });
 
@@ -831,6 +858,7 @@ describe('ResourcesService', () => {
         id: 'res_1',
         contributorId: 'someone_else',
         isAnonymous: true,
+        _count: { savedResources: 0 },
       });
 
       await expect(
@@ -875,6 +903,7 @@ describe('ResourcesService', () => {
         id: 'res_1',
         contributorId: null,
         isAnonymous: false,
+        _count: { savedResources: 0 },
       });
 
       await expect(
@@ -950,6 +979,9 @@ describe('ResourcesService', () => {
       id: 'res_1',
       contributorId: userId,
       isAnonymous: false,
+      // The ownership guard reads this row through `toResourceResponse`, so even
+      // a deliberately partial fixture has to carry the selected count.
+      _count: { savedResources: 0 },
     });
 
     it('lets the contributor delete their own resource', async () => {
@@ -971,6 +1003,7 @@ describe('ResourcesService', () => {
         id: 'res_1',
         contributorId: 'user_1',
         isAnonymous: true,
+        _count: { savedResources: 0 },
       });
       prisma.resource.delete.mockResolvedValue({ id: 'res_1' });
 
@@ -1004,6 +1037,7 @@ describe('ResourcesService', () => {
         id: 'res_1',
         contributorId: null,
         isAnonymous: false,
+        _count: { savedResources: 0 },
       });
       prisma.user.findUnique.mockResolvedValue({ role: UserRole.USER });
 

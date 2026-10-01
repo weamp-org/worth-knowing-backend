@@ -127,6 +127,7 @@ describe('Resources (e2e)', () => {
         ...validBody,
         contributor: null,
         isAnonymous: false,
+        _count: { savedResources: 0 },
       });
 
       const response = await request(app.getHttpServer())
@@ -209,6 +210,9 @@ describe('Resources (e2e)', () => {
       isAnonymous: false,
       contributorId: 'user_1',
       contributor,
+      // Every read row goes through `toResourceResponse`, which flattens the
+      // selected count into `savedCount`.
+      _count: { savedResources: 0 },
     });
 
     it('points a public profile at /u/:username', async () => {
@@ -288,6 +292,7 @@ describe('Resources (e2e)', () => {
       isAnonymous: true,
       contributorId: 'user_1',
       contributor: { id: 'user_1', name: 'Ada Lovelace', imageUrl: null },
+      _count: { savedResources: 0 },
     };
 
     it('withholds the contributor from a signed-out reader', async () => {
@@ -349,6 +354,7 @@ describe('Resources (e2e)', () => {
     it('GET /api/v1/resources/:id/mine is true for the contributor', async () => {
       prisma.resource.findUnique.mockResolvedValue({
         contributorId: 'user_1',
+        _count: { savedResources: 0 },
       });
 
       const response = await asUser('user_1')
@@ -361,6 +367,7 @@ describe('Resources (e2e)', () => {
     it('GET /api/v1/resources/:id/mine is false for a stranger', async () => {
       prisma.resource.findUnique.mockResolvedValue({
         contributorId: 'user_1',
+        _count: { savedResources: 0 },
       });
 
       const response = await asUser('user_other')
@@ -561,6 +568,7 @@ describe('Resources (e2e)', () => {
         prisma.resource.findUnique.mockResolvedValue({
           id: 'res_1',
           contributorId: 'clerk_123',
+          _count: { savedResources: 0 },
         });
         prisma.resource.findFirst.mockResolvedValue({ id: 'res_other' });
 
@@ -576,6 +584,7 @@ describe('Resources (e2e)', () => {
         prisma.resource.findUnique.mockResolvedValue({
           id: 'res_1',
           contributorId: 'clerk_123',
+          _count: { savedResources: 0 },
         });
 
         await asUser('clerk_123')
@@ -591,6 +600,7 @@ describe('Resources (e2e)', () => {
       prisma.resource.findUnique.mockResolvedValue({
         id: 'res_1',
         contributorId: 'someone_else',
+        _count: { savedResources: 0 },
       });
 
       await asUser('clerk_123').delete('/api/v1/resources/res_1').expect(403);
@@ -604,6 +614,7 @@ describe('Resources (e2e)', () => {
       prisma.resource.findUnique.mockResolvedValue({
         id: 'res_1',
         contributorId: 'clerk_123',
+        _count: { savedResources: 0 },
       });
 
       await asUser('clerk_123').delete('/api/v1/resources/res_1').expect(200);
@@ -618,6 +629,7 @@ describe('Resources (e2e)', () => {
       prisma.resource.findUnique.mockResolvedValue({
         id: 'res_1',
         contributorId: 'someone_else',
+        _count: { savedResources: 0 },
       });
 
       await asUser('clerk_admin').delete('/api/v1/resources/res_1').expect(200);
@@ -629,7 +641,13 @@ describe('Resources (e2e)', () => {
   });
 
   describe('pagination', () => {
-    const row = (id: string) => ({ id, createdAt: new Date() });
+    // Minimal by design — these tests are about pagination arithmetic. `_count` is
+    // still present because every read row goes through `toResourceResponse`.
+    const row = (id: string) => ({
+      id,
+      createdAt: new Date(),
+      _count: { savedResources: 0 },
+    });
 
     it('defaults to 20 rows and fetches 21 to detect a next page', async () => {
       prisma.resource.findMany.mockResolvedValue([]);

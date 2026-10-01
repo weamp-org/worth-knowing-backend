@@ -343,7 +343,37 @@ scan of the whole join table.
 #### Deleting
 
 Both foreign keys cascade, so deleting a collection removes its join rows and
-deleting a resource removes it from every collection it was in. Neither touches
+deleting a resource removes it from every collection it was in.
+
+### Saved resources
+
+`SavedResource(userId, resourceId, savedAt)` is the bookmark list — a resource
+somebody saved with no grouping attached. It is a third explicit join model,
+structurally identical to `CollectionResource` with the collection half replaced
+by a user.
+
+The composite primary key is what makes save and unsave idempotent without the
+service reading first, and it is also the cursor target for `GET /saved`: the
+cursor carries only `resourceId`, because `userId` is known from the session.
+
+The list pages on `savedAt DESC, resourceId DESC`, not on the resource's own
+`createdAt` — for a two-year-old contribution saved yesterday, `createdAt` would
+sort the list into the wrong order entirely.
+
+`@@index([resourceId])` backs the public `savedCount` on
+`ResourceResponseDto.savedCount`, which is read far more often than any one
+person's list.
+
+Both FKs cascade, so deleting a user removes their bookmarks and deleting a
+resource removes it from every saved list.
+
+Deliberately **not** modelled as a system-owned "Saved" collection. A collection
+is a curation with a reason for why its contents belong together; a bookmark has
+no such claim. Folding them together would make `description` meaningless on the
+one list everybody has, force every listing query to exclude it, and collide with
+the cascade that removes a deleted user's collections.
+
+See [saved.md](./saved.md). Neither touches
 a resource. `TagsService.remove` refuses to delete a tag that still has
 resources, and collections deliberately do **not** follow that precedent: that
 guard exists because detaching a tag would rewrite contributions other people
@@ -553,8 +583,24 @@ There are no `prisma` seed hooks. Prisma 7 removed them, and there is no
 deliberate `pnpm` script instead:
 
 ```bash
-pnpm seed:reserved-usernames
+pnpm seed:reserved-usernames   # the reserved-username table
+pnpm seed:resources            # a dev set of resources, tags and contributors
 ```
+
+`seed:resources` is the one to reach for when you want something to look at: 19
+fictional resources across eight `ResourceType`s, both access levels, two
+contributors, one anonymously shared row, 36 tags, and dates spread over a month
+so keyset pagination has something to page. Every row's id starts with `seed-`,
+and the script **deletes only `seed-%` rows** before inserting, so re-running
+refreshes the set instead of doubling it and can never touch a real contribution.
+
+That delete is the difference from `seed:reserved-usernames`, which only ever
+appends. `ON CONFLICT DO NOTHING` alone would leave yesterday's rows behind after
+you edited the list.
+
+A seeded contributor is an invented Clerk id (`seed-user-ada`) and can never be
+signed in to, which is deliberate — a seed cannot collide with a real account,
+and the resources are still attributed and browsable.
 
 That seeds the reserved-username table. It **generates SQL and pipes it to
 `prisma db execute`** rather than using the client, because the generated Prisma
@@ -563,10 +609,22 @@ internals with a `.js` extension that only resolves under the Nest build, and
 fails with `Cannot find module './internal/class.js'`. Same reason
 `user-set-role.sh` is a shell script.
 
-Idempotency is `ON CONFLICT ("usernameLower") DO NOTHING`, so re-running never
-overwrites a `RELEASED` row written by a username change. Note the column list
-omits `createdAt`: the table has `DEFAULT CURRENT_TIMESTAMP`, and naming the
-column would make Postgres expect a third expression per row.
+Idempotency for `seed:reserved-usernames` is `ON CONFLICT ("usernameLower") DO
+NOTHING`, so re-running never overwrites a `RELEASED` row written by a username
+change. Note the column list omits `createdAt`: the table has
+`DEFAULT CURRENT_TIMESTAMP`, and naming the column would make Postgres expect a
+third expression per row.
+
+**Columns with no database default must be supplied by a raw seed.** Prisma
+manages `id` (via `@default(cuid())`) and `updatedAt` (via `@updatedAt`) on the
+application side, so neither has a `DEFAULT` in Postgres and a hand-written INSERT
+that omits them leaves `NULL` against a `NOT NULL` column. `seed:resources`
+supplies both explicitly for `Tag`; `createdAt` is genuinely defaulted and is
+left out for the same reason as above.
+
+**The `_ResourceToTag` join takes ids, not slugs.** Its foreign keys point at
+`Resource(id)` and `Tag(id)`, so a seed that joins on the tag slug looks correct
+and then fails on the constraint.
 
 ## Troubleshooting
 

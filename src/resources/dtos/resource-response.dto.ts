@@ -87,6 +87,19 @@ export class ResourceResponseDto {
   isAnonymous: boolean;
 
   tags: TagSummaryDto[];
+
+  /**
+   * How many people saved this resource.
+   *
+   * Public, unlike every other field here. A signal of *interest* rather than of
+   * quality — it says people came back for it, not that it is the best one here
+   * — which is why it is not behind a signed-in read.
+   *
+   * Present on every resource response, so the feed, a collection's contents and
+   * a person's saved list all show it without a second request.
+   * @example 12
+   */
+  savedCount: number;
 }
 
 /** One page of `GET /api/v1/resources`. */

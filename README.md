@@ -9,6 +9,32 @@ NestJS 11 API for Worth Knowing, with Clerk authentication, Prisma ORM, role-bas
 - **Database** — Prisma v7 with PostgreSQL via `@prisma/adapter-pg`, auto-generated typed client, migration workflow
 - **Resources** — Share a specific resource with a `why`, plus free-form tags, anonymous sharing, and keyset-paginated browsing
 - **Collections** — Gather resources into a titled, optionally described list; private by default, curated from anything on the site
+- **Saved resources** — Bookmark any resource in one click, independent of collections; a public save count on every resource response
+
+### Saved resources
+
+A bookmark with no grouping attached — one click, and the resource lands on
+`/saved`. **Deliberately not a system-owned "Saved" collection**: a collection is a
+curation with a reason for why its contents belong together, and a bookmark has
+no such claim, so folding them together would make `description` vacuous on the
+one list everybody has.
+
+Saving and collecting are **independent**. Saving something and later filing it in
+a collection leaves both intact, because the bookmark is sometimes the only copy
+somebody has. See [docs/saved.md](docs/saved.md).
+
+Every route under `/saved` requires a session — a bookmark list is the most
+private thing a person has here, and unlike a resource or a profile there is no
+public version of it. `savedCount`, by contrast, is public and sits on every
+resource response; it is a signal of _interest_, not of quality.
+
+There is deliberately **no sort-by-saved and no "most saved" rail**. Paging by an
+aggregate whose value changes while you page through it is genuinely hard, and
+ranking the whole feed by saves would bury the newest contribution the moment
+anybody saves anything. Sorting belongs on a filtered view, opt-in — see
+[docs/saved.md](docs/saved.md).
+
+- **Saved resources** — Bookmark any resource in one click, independent of collections; a public save count on every resource response
 - **REST API** — Global `/api/v1` prefix, users CRUD scaffold, `ValidationPipe` with whitelist/transform (with implicit conversion)
 - **Webhooks** — Clerk webhook handler for `user.created` / `user.updated` / `user.deleted` events with signature verification
 - **Rate Limiting** — `@nestjs/throttler`, 100 requests/min per user
@@ -46,11 +72,19 @@ docker compose up -d
 # 5. Run database migrations
 pnpm prisma migrate dev
 
-# 6. Start the development server
+# 6. Optional: seed some resources so the feed has something in it
+pnpm seed:resources
+
+# 7. Start the development server
 pnpm start:dev
 ```
 
 The API is now available at `http://localhost:3000/api/v1`. Swagger docs at `http://localhost:3000/api/v1/documentation`.
+
+`pnpm seed:resources` gives you 19 fictional resources with tags, spread over a
+month so pagination is worth testing. It deletes and re-inserts only rows whose
+id starts with `seed-`, so re-running it is safe and never touches a real
+contribution.
 
 ## Docker setup
 
@@ -150,6 +184,11 @@ worth-knowing-backend/
 │   │   ├── collections.controller.ts # /api/v1/collections
 │   │   ├── collections.service.ts
 │   │   └── dtos/
+│   ├── saved/
+│   │   ├── saved.module.ts
+│   │   ├── saved.controller.ts     # /api/v1/saved (all authenticated)
+│   │   ├── saved.service.ts
+│   │   └── dtos/
 │   ├── users/
 │   │   ├── users.module.ts
 │   │   ├── users.controller.ts     # /api/v1/users/me/* and /api/v1/users/:username
@@ -199,6 +238,7 @@ The project uses two env files loaded in order: `.env.local` (local overrides, g
 | `pnpm test:cov`           | Run unit tests with coverage                         |
 | `pnpm prisma generate`    | Regenerate Prisma client after schema changes        |
 | `pnpm prisma migrate dev` | Create and apply a new migration                     |
+| `pnpm seed:resources`     | Seed a dev set of resources, tags and contributors   |
 
 ## API overview
 
@@ -216,6 +256,10 @@ All endpoints are prefixed with `/api/v1`.
 | `POST`   | `/resources`                             | Authenticated          | Share a resource (409 if you already shared that link) |
 | `PATCH`  | `/resources/:id`                         | Contributor or admin   | Update a resource                                      |
 | `DELETE` | `/resources/:id`                         | Contributor or admin   | Delete a resource                                      |
+| `GET`    | `/saved`                                 | Authenticated          | Your own saved resources, newest saved first           |
+| `GET`    | `/saved/:resourceId`                     | Authenticated          | Did you save this resource                             |
+| `POST`   | `/saved`                                 | Authenticated          | Save a resource (idempotent)                           |
+| `DELETE` | `/saved/:resourceId`                     | Authenticated          | Remove a resource from your saved list                 |
 | `GET`    | `/collections/me`                        | Authenticated          | Your own collections                                   |
 | `GET`    | `/collections/:id`                       | Public                 | One collection (404 if private and not yours)          |
 | `GET`    | `/collections/:id/resources`             | Public                 | A collection's contents, newest collected first        |
@@ -372,6 +416,7 @@ See [docs/auth.md](docs/auth.md) for a detailed walkthrough.
 
 - **Add a new resource** — See [docs/new-resource.md](docs/new-resource.md) for a step-by-step guide
 - **Collections** — See [docs/collections.md](docs/collections.md) for the API, the visibility rules, and why the anonymity redaction is shared
+- **Saved resources** — See [docs/saved.md](docs/saved.md) for the bookmark list, why it is not a collection, and why there is no sort-by-saved
 - **Database changes** — Edit `prisma/schema.prisma`, run `pnpm prisma migrate dev`, then `pnpm prisma generate`
 - **Testing** — See [docs/testing.md](docs/testing.md) for patterns and conventions
 - **Logging** — See [docs/logging.md](docs/logging.md) for the middleware route pattern, `originalUrl` vs `req.url`, and known limitations

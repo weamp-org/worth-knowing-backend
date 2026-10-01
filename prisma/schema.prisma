@@ -103,6 +103,7 @@ model User {
 
   resources Resource[]
   collections Collection[]
+  savedResources SavedResource[]
 }
 
 /// Every username that must not be claimable, whether or not anyone holds it.
@@ -162,6 +163,7 @@ model Resource {
   @@unique([contributorId, url])
 
   collectionResources CollectionResource[]
+  savedResources SavedResource[]
 }
 
 /// A gathering of resources somebody chose to keep together.
@@ -262,4 +264,40 @@ model Tag {
   updatedAt DateTime @updatedAt
 
   resources Resource[]
+}
+
+/// A resource somebody bookmarked, with no grouping attached.
+///
+/// Deliberately not a collection. A collection is a *curation* — the owner is
+/// saying "these belong together, and here is why" — while a save is one click
+/// with no such claim. Folding saves into a system-owned "Saved" collection was
+/// considered and rejected: it would make the description meaningless on the one
+/// list everybody has, force every listing query to exclude it, and collide with
+/// the cascade that removes a deleted user's collections.
+///
+/// A saved resource is *independent* of collections. Saving something and later
+/// collecting it leaves both intact, because the bookmark is sometimes the only
+/// copy someone has and removing it without being asked would be magic.
+model SavedResource {
+  userId     String
+  resourceId String
+  savedAt    DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+  /// The same resource cannot be saved twice, which is what makes save and
+  /// unsave idempotent without the service having to read first.
+  @@id([userId, resourceId])
+
+  // Serves the owner's saved list, `WHERE user_id = ? ORDER BY saved_at DESC,
+  // resource_id DESC`. The `resourceId` tiebreaker is in the index for the same
+  // reason it is in the collection listing: `savedAt` is not unique, and a
+  // keyset cursor over a non-total order skips or repeats rows.
+  @@index([userId, savedAt(sort: Desc), resourceId(sort: Desc)])
+
+  // Serves the public count on `ResourceResponseDto.savedCount`, which is read
+  // far more often than any one person's saved list. Without this, counting
+  // savers for a page of resources is a sequential scan per row.
+  @@index([resourceId])
 }

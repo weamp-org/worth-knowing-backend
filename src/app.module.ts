@@ -14,6 +14,7 @@ import { ALL_ROUTES } from './logging/routes.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { CollectionsModule } from './collections/collections.module.js';
 import { ResourcesModule } from './resources/resources.module.js';
+import { SavedModule } from './saved/saved.module.js';
 import { TagsModule } from './tags/tags.module.js';
 import { UsersModule } from './users/users.module.js';
 import { WebhooksModule } from './webhooks/webhooks.module.js';
@@ -36,6 +37,7 @@ import { WebhooksModule } from './webhooks/webhooks.module.js';
     PrismaModule,
     CollectionsModule,
     ResourcesModule,
+    SavedModule,
     TagsModule,
     UsersModule,
     WebhooksModule,

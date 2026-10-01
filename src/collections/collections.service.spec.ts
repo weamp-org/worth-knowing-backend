@@ -60,6 +60,9 @@ function resourceRow(overrides: Record<string, unknown> = {}) {
       isProfilePrivate: false,
     },
     tags: [],
+    // A collection's contents go through the same `toResourceResponse` as every
+    // other public resource read, so this fixture carries the selected count too.
+    _count: { savedResources: 0 },
     ...overrides,
   };
 }
