@@ -67,6 +67,54 @@ export type CommentWithRelations = Prisma.CommentGetPayload<{
   include: typeof commentInclude;
 }>;
 
+/**
+ * Read shape for the report queue.
+ *
+ * The same comment include, so a moderator reads a reported comment through exactly
+ * the code path a reader does. `_count` adds how many people reported it, which is
+ * what lets a queue be triaged without opening every row.
+ *
+ * `reporterId` is **not** selected anywhere in this shape. A moderator needs to know
+ * a report exists and what it says, not who filed it — naming reporters makes
+ * reporting something with an audience, and the people who file them are exactly the
+ * ones who should not be visible to each other. See `CommentReportDto`.
+ */
+export const reportInclude = {
+  comment: {
+    include: { ...commentInclude, _count: { select: { reports: true } } },
+  },
+} as const;
+
+/**
+ * Newest report first, then `reporterId`, then `commentId`.
+ *
+ * Both trailing columns are load-bearing and the reason this list is one row per
+ * report rather than one row per reported comment: `createdAt` is not unique, and
+ * neither is `reporterId` on its own — one person reports many comments — so a
+ * keyset cursor over any prefix of this would skip or repeat rows.
+ * Paired with `CommentReport_createdAt_reporterId_commentId_idx`.
+ */
+export const commentReportOrderBy = [
+  { createdAt: 'desc' },
+  { reporterId: 'desc' },
+  { commentId: 'desc' },
+] satisfies Prisma.CommentReportOrderByWithRelationInput[];
+
+/** A report row as read, before any reshaping. */
+export type CommentReportWithComment = Prisma.CommentReportGetPayload<{
+  include: typeof reportInclude;
+}>;
+
+/** A report as it is returned to the admin queue. */
+export type CommentReportResponse = {
+  /** The composite primary key, `reporterId:commentId`. Carries no meaning to read. */
+  id: string;
+  comment: CommentResponse;
+  reportCount: number;
+  reason: string;
+  createdAt: Date;
+};
+
 /** How much of a parent is carried into a reply. See {@link truncateForQuote}. */
 export const PARENT_QUOTE_LENGTH = 160;
 
@@ -158,5 +206,34 @@ function toAuthorSummary(
     ...summary,
     name: resolveDisplayName({ name: summary.name, username }),
     profilePath: resolveProfilePath({ usernameLower, isProfilePrivate }),
+  };
+}
+
+/**
+ * Flattens a report row into the admin queue's shape.
+ *
+ * The comment goes through {@link toCommentResponse} rather than a second copy of the
+ * flattening, so a moderator reads a reported comment through the same code path a
+ * reader does and the two cannot drift.
+ *
+ * `viewerId` is deliberately not passed. A moderator is looking at somebody else's
+ * comment, so `isMine` is always false in this context — and forwarding the admin's
+ * own id would mean the field occasionally reads true, which would be a moderator's
+ * own report appearing as their own comment.
+ *
+ * `reason` is flattened to an empty string rather than left null: the column is
+ * nullable because not every reporter explains themselves, but a null on the response
+ * would make a client render a fallback for something that reads as a bug rather
+ * than as an absent reason.
+ */
+export function toCommentReportResponse(
+  report: CommentReportWithComment,
+): CommentReportResponse {
+  return {
+    id: `${report.reporterId}:${report.commentId}`,
+    comment: toCommentResponse(report.comment),
+    reportCount: report.comment._count.reports,
+    reason: report.reason ?? '',
+    createdAt: report.createdAt,
   };
 }

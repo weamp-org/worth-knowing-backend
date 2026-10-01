@@ -59,6 +59,10 @@ describe('CommentsService', () => {
       findMany: jest.Mock;
       findUnique: jest.Mock;
     };
+    commentReport: {
+      createMany: jest.Mock;
+      findMany: jest.Mock;
+    };
     resource: { findUnique: jest.Mock };
     user: { findUnique: jest.Mock };
   };
@@ -78,6 +82,10 @@ describe('CommentsService', () => {
               delete: jest.fn().mockResolvedValue({}),
               findMany: jest.fn().mockResolvedValue([]),
               findUnique: jest.fn().mockResolvedValue(commentRow()),
+            },
+            commentReport: {
+              createMany: jest.fn().mockResolvedValue({ count: 1 }),
+              findMany: jest.fn().mockResolvedValue([]),
             },
             resource: {
               findUnique: jest.fn().mockResolvedValue({ id: RESOURCE }),
@@ -456,6 +464,227 @@ describe('CommentsService', () => {
       await service.remove(RESOURCE, 'cmt_1', USER);
 
       expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('report', () => {
+    it('files the report against the comment and the session user', async () => {
+      await service.report(RESOURCE, 'cmt_1', USER, {
+        reason: 'Links to a site that served me malware.',
+      });
+
+      expect(prisma.commentReport.createMany).toHaveBeenCalledWith({
+        data: {
+          reporterId: USER,
+          commentId: 'cmt_1',
+          reason: 'Links to a site that served me malware.',
+        },
+        skipDuplicates: true,
+      });
+    });
+
+    it('skips duplicates, so a double-click is not punished and cannot pad the count', async () => {
+      await service.report(RESOURCE, 'cmt_1', USER, {});
+
+      // `skipDuplicates` rather than a read-then-write: race-safe in a way a check is
+      // not, and the composite primary key is what actually prevents the duplicate.
+      expect(prisma.commentReport.createMany).toHaveBeenCalledWith(
+        expect.objectContaining({ skipDuplicates: true }),
+      );
+    });
+
+    it('trims the reason, so a whitespace-only one is stored as absent', async () => {
+      await service.report(RESOURCE, 'cmt_1', USER, { reason: '   ' });
+
+      expect(prisma.commentReport.createMany).toHaveBeenCalledWith({
+        data: { reporterId: USER, commentId: 'cmt_1' },
+        skipDuplicates: true,
+      });
+    });
+
+    it('omits the reason entirely when none was given', async () => {
+      await service.report(RESOURCE, 'cmt_1', USER, {});
+
+      expect(prisma.commentReport.createMany).toHaveBeenCalledWith({
+        data: { reporterId: USER, commentId: 'cmt_1' },
+        skipDuplicates: true,
+      });
+    });
+
+    it('refuses a report on your own comment', async () => {
+      prisma.comment.findUnique.mockResolvedValue({
+        id: 'cmt_1',
+        authorId: USER,
+      });
+
+      await expect(
+        service.report(RESOURCE, 'cmt_1', USER, {}),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(prisma.commentReport.createMany).not.toHaveBeenCalled();
+    });
+
+    it('scopes to the resource, so a report cannot be filed through the wrong thread', async () => {
+      prisma.comment.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.report('res_other', 'cmt_1', USER, {}),
+      ).rejects.toBeInstanceOf(NotFoundException);
+
+      expect(prisma.commentReport.createMany).not.toHaveBeenCalled();
+    });
+
+    it('lets anybody signed in report somebody else’s comment', async () => {
+      // No role check at all: reporting is not a privileged act, which is the point.
+      prisma.comment.findUnique.mockResolvedValue({
+        id: 'cmt_1',
+        authorId: OTHER,
+      });
+
+      await service.report(RESOURCE, 'cmt_1', USER, {});
+
+      expect(prisma.commentReport.createMany).toHaveBeenCalled();
+    });
+  });
+
+  describe('listReports', () => {
+    /** A report row shaped like the `reportInclude` read. */
+    function reportRow(overrides: Record<string, unknown> = {}) {
+      return {
+        reporterId: OTHER,
+        commentId: 'cmt_1',
+        reason: 'Links to a site that served me malware.',
+        createdAt: new Date('2026-03-01T00:00:00.000Z'),
+        comment: { ...commentRow(), _count: { reports: 3 } },
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      prisma.commentReport.findMany.mockResolvedValue([reportRow()]);
+    });
+
+    it('orders by when it was flagged, not when the comment was written', async () => {
+      await service.listReports();
+
+      // Paged over the report, for the same reason `SavedService` pages over the
+      // save: a two-year-old comment reported yesterday is the newest thing a
+      // moderator has to look at.
+      expect(prisma.commentReport.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderBy: [
+            { createdAt: 'desc' },
+            { reporterId: 'desc' },
+            { commentId: 'desc' },
+          ],
+        }),
+      );
+    });
+
+    it('returns one row per report, so the order is over a plain column', async () => {
+      const page = await service.listReports();
+
+      expect(page.items).toHaveLength(1);
+      expect(page.items[0].reportCount).toBe(3);
+    });
+
+    it('never names the reporter', async () => {
+      const page = await service.listReports();
+
+      // A moderator needs to know a report exists and what it said, not who filed it.
+      expect(page.items[0]).not.toHaveProperty('reporterId');
+      expect(page.items[0]).not.toHaveProperty('reporter');
+      expect(page.items[0].id).toBe(`${OTHER}:cmt_1`);
+    });
+
+    it('renders the reported comment through the public thread’s own shape', async () => {
+      const page = await service.listReports();
+
+      expect(page.items[0].comment).toEqual(
+        expect.objectContaining({
+          id: 'cmt_1',
+          author: expect.objectContaining({ name: 'Grace Hopper' }) as object,
+        }),
+      );
+    });
+
+    it('leaves isMine false on every queued comment, even the admin’s own', async () => {
+      const page = await service.listReports();
+
+      // A moderator is looking at somebody else's comment; forwarding their id would
+      // make their own report appear as their own comment.
+      expect(page.items[0].comment.isMine).toBe(false);
+    });
+
+    it('flattens an absent reason to an empty string', async () => {
+      prisma.commentReport.findMany.mockResolvedValue([
+        reportRow({ reason: null }),
+      ]);
+
+      const page = await service.listReports();
+
+      expect(page.items[0].reason).toBe('');
+    });
+
+    it('asks for one row over the page, so hasMore needs no COUNT(*)', async () => {
+      await service.listReports(5);
+
+      expect(prisma.commentReport.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 6 }),
+      );
+    });
+
+    it('trims the extra row and cursors on the last kept one', async () => {
+      prisma.commentReport.findMany.mockResolvedValue([
+        reportRow({ commentId: 'cmt_a', reporterId: 'user_a' }),
+        reportRow({ commentId: 'cmt_b', reporterId: 'user_b' }),
+        reportRow({ commentId: 'cmt_c', reporterId: 'user_c' }),
+      ]);
+
+      const page = await service.listReports(2);
+
+      expect(page.items).toHaveLength(2);
+      expect(page.nextCursor).toBe(encodeCursor('user_b:cmt_b'));
+    });
+
+    it('cursors on the composite key, since one person reports many comments', async () => {
+      await service.listReports(undefined, encodeCursor(`${OTHER}:cmt_1`));
+
+      expect(prisma.commentReport.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cursor: {
+            reporterId_commentId: { reporterId: OTHER, commentId: 'cmt_1' },
+          },
+          skip: 1,
+        }),
+      );
+    });
+
+    it('rejects a cursor that is not a reporter:comment pair', async () => {
+      await expect(
+        service.listReports(undefined, encodeCursor('cmt_1')),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rejects a cursor missing either half of the pair', async () => {
+      for (const cursor of [encodeCursor(':cmt_1'), encodeCursor('user_1:')]) {
+        await expect(
+          service.listReports(undefined, cursor),
+        ).rejects.toBeInstanceOf(BadRequestException);
+      }
+    });
+
+    it('400s a cursor naming a row that is gone, since a report can be deleted', async () => {
+      prisma.commentReport.findMany.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('gone', {
+          code: 'P2025',
+          clientVersion: '7.0.0',
+        }),
+      );
+
+      await expect(
+        service.listReports(undefined, encodeCursor(`${OTHER}:cmt_gone`)),
+      ).rejects.toBeInstanceOf(BadRequestException);
     });
   });
 });

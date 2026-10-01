@@ -47,10 +47,27 @@ interface CommentsBody {
   items: Array<{
     id: string;
     resourceId: string;
+    body: string;
     author: Record<string, unknown> | null;
     isMine: boolean;
   }>;
   nextCursor: string | null;
+}
+
+/** A page of the admin report queue. */
+interface ReportsBody {
+  items: Array<{
+    id: string;
+    comment: { id: string; body: string; isMine: boolean };
+    reportCount: number;
+    reason: string;
+  }>;
+  nextCursor: string | null;
+}
+
+/** Reads the report queue body. Narrowed for the same reason as {@link asPage}. */
+function asReports(response: { body: unknown }): ReportsBody {
+  return response.body as ReportsBody;
 }
 
 /**
@@ -83,6 +100,10 @@ describe('Comments (e2e)', () => {
       delete: jest.Mock;
       findMany: jest.Mock;
       findUnique: jest.Mock;
+    };
+    commentReport: {
+      createMany: jest.Mock;
+      findMany: jest.Mock;
     };
     resource: { findUnique: jest.Mock };
     user: { findUnique: jest.Mock };
@@ -123,6 +144,18 @@ describe('Comments (e2e)', () => {
           delete: jest.fn().mockResolvedValue({}),
           findMany: jest.fn().mockResolvedValue([commentRow()]),
           findUnique: jest.fn().mockResolvedValue(commentRow()),
+        },
+        commentReport: {
+          createMany: jest.fn().mockResolvedValue({ count: 1 }),
+          findMany: jest.fn().mockResolvedValue([
+            {
+              reporterId: OTHER,
+              commentId: 'cmt_1',
+              reason: 'Links to a site that served me malware.',
+              createdAt: new Date('2026-03-01T00:00:00.000Z'),
+              comment: { ...commentRow(), _count: { reports: 3 } },
+            },
+          ]),
         },
         resource: {
           findUnique: jest.fn().mockResolvedValue({ id: RESOURCE }),
@@ -411,6 +444,157 @@ describe('Comments (e2e)', () => {
       await asUser(USER).delete(`${thread}/cmt_elsewhere`).expect(404);
 
       expect(prisma.comment.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST .../report', () => {
+    const report = `${thread}/cmt_1/report`;
+
+    it('requires a session, since a report has to be attributable', async () => {
+      await asAnon.post(report, { reason: 'Malware.' }).expect(401);
+    });
+
+    it('files the report and answers 204 with no body', async () => {
+      prisma.comment.findUnique.mockResolvedValue({
+        id: 'cmt_1',
+        authorId: OTHER,
+      });
+
+      const response = await asUser(USER)
+        .post(report, { reason: 'Malware.' })
+        .expect(204);
+
+      expect(response.text).toBe('');
+      expect(prisma.commentReport.createMany).toHaveBeenCalledWith({
+        data: { reporterId: USER, commentId: 'cmt_1', reason: 'Malware.' },
+        skipDuplicates: true,
+      });
+    });
+
+    it('does not change the thread, so a report is invisible to readers', async () => {
+      prisma.comment.findUnique.mockResolvedValue({
+        id: 'cmt_1',
+        authorId: OTHER,
+      });
+
+      await asUser(USER).post(report, { reason: 'Malware.' }).expect(204);
+
+      // Nothing about the comment itself was written, so the public listing is
+      // untouched and no reader — including the author — can tell it was flagged.
+      expect(prisma.comment.create).not.toHaveBeenCalled();
+      expect(prisma.comment.delete).not.toHaveBeenCalled();
+    });
+
+    it('is idempotent rather than a 409 on a repeat', async () => {
+      prisma.comment.findUnique.mockResolvedValue({
+        id: 'cmt_1',
+        authorId: OTHER,
+      });
+
+      await asUser(USER).post(report, {}).expect(204);
+
+      expect(prisma.commentReport.createMany).toHaveBeenCalledWith(
+        expect.objectContaining({ skipDuplicates: true }),
+      );
+    });
+
+    it('refuses a report on your own comment', async () => {
+      prisma.comment.findUnique.mockResolvedValue({
+        id: 'cmt_1',
+        authorId: USER,
+      });
+
+      await asUser(USER).post(report, {}).expect(400);
+
+      expect(prisma.commentReport.createMany).not.toHaveBeenCalled();
+    });
+
+    it('404s for a comment on a different resource', async () => {
+      prisma.comment.findUnique.mockResolvedValue(null);
+
+      await asUser(USER).post(report, {}).expect(404);
+
+      expect(prisma.commentReport.createMany).not.toHaveBeenCalled();
+    });
+
+    it('accepts a report with no reason at all', async () => {
+      prisma.comment.findUnique.mockResolvedValue({
+        id: 'cmt_1',
+        authorId: OTHER,
+      });
+
+      await asUser(USER).post(report, {}).expect(204);
+
+      expect(prisma.commentReport.createMany).toHaveBeenCalledWith({
+        data: { reporterId: USER, commentId: 'cmt_1' },
+        skipDuplicates: true,
+      });
+    });
+
+    it('rejects a reason over the column limit', async () => {
+      await asUser(USER)
+        .post(report, { reason: 'x'.repeat(501) })
+        .expect(400);
+    });
+
+    it('rejects an unknown field, since the pipe forbids extras', async () => {
+      await asUser(USER)
+        .post(report, { reason: 'Malware.', punish: true })
+        .expect(400);
+    });
+  });
+
+  describe('GET /comment-reports', () => {
+    const queue = '/api/v1/comment-reports';
+
+    it('refuses a signed-out reader', async () => {
+      await asAnon.get(queue).expect(401);
+    });
+
+    it('refuses a signed-in non-admin', async () => {
+      await asUser(USER).get(queue).expect(403);
+    });
+
+    it('serves an admin, newest report first', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      await asUser(USER).get(queue).expect(200);
+
+      expect(prisma.commentReport.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderBy: [
+            { createdAt: 'desc' },
+            { reporterId: 'desc' },
+            { commentId: 'desc' },
+          ],
+        }),
+      );
+    });
+
+    it('carries the comment so a moderator can judge it without opening anything', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      const response = await asUser(USER).get(queue).expect(200);
+
+      expect(asReports(response).items[0].comment.body).toBe(
+        'Chapter 14 is the one that made the whole argument land.',
+      );
+      expect(asReports(response).items[0].reportCount).toBe(3);
+    });
+
+    it('never names the reporter', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      const response = await asUser(USER).get(queue).expect(200);
+
+      expect(asReports(response).items[0]).not.toHaveProperty('reporterId');
+      expect(asReports(response).items[0]).not.toHaveProperty('reporter');
+    });
+
+    it('rejects an unknown query parameter', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      await asUser(USER).get(`${queue}?order=oldest`).expect(400);
     });
   });
 });

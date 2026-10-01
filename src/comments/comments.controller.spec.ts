@@ -63,7 +63,9 @@ describe('CommentsController', () => {
   let service: {
     findForResource: jest.Mock;
     create: jest.Mock;
+    report: jest.Mock;
     remove: jest.Mock;
+    listReports: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -77,7 +79,11 @@ describe('CommentsController', () => {
               .fn()
               .mockResolvedValue({ items: [], nextCursor: null }),
             create: jest.fn().mockResolvedValue({}),
+            report: jest.fn().mockResolvedValue(undefined),
             remove: jest.fn().mockResolvedValue(undefined),
+            listReports: jest
+              .fn()
+              .mockResolvedValue({ items: [], nextCursor: null }),
           },
         },
         // Registered because `@UseGuards` instantiates both by class reference, even
@@ -152,6 +158,35 @@ describe('CommentsController', () => {
         undefined,
         undefined,
         undefined,
+      );
+    });
+  });
+
+  describe('report', () => {
+    it('passes the resource, the comment and the reporter through', async () => {
+      await controller.report('res_1', 'cmt_1', 'user_1', {
+        reason: 'Malware.',
+      });
+
+      expect(service.report).toHaveBeenCalledWith('res_1', 'cmt_1', 'user_1', {
+        reason: 'Malware.',
+      });
+    });
+
+    it('leaves the report guarded, since reporting needs a person to attribute it to', () => {
+      expect(isPublicOn('report')).toBeUndefined();
+    });
+
+    it('answers 204 with no body, so a report renders as nothing at all', () => {
+      // A reported comment looks exactly as it did before. Nothing is shown to
+      // anybody — not the author, not other readers — because showing it would turn a
+      // quiet signal into a scoreboard.
+      expect(metadataOn('report', '__httpCode__')).toBe(HttpStatus.NO_CONTENT);
+    });
+
+    it('shares the comment write throttle, so reporting cannot outrun posting', () => {
+      expect(metadataOn('create', '__throttle__')).toEqual(
+        metadataOn('report', '__throttle__'),
       );
     });
   });

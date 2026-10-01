@@ -109,3 +109,64 @@ export class PaginatedCommentsResponseDto {
    */
   nextCursor: string | null;
 }
+
+/**
+ * One row of the admin report queue: a single report, with the comment it points at.
+ *
+ * **One row per report, not per reported comment.** That is a deliberate choice with
+ * a cost, and the cost is that a comment five people reported occupies five rows. The
+ * alternative — grouping, so each comment appears once carrying its own report count —
+ * is what a moderator would actually want to act on, and it is not built, because
+ * grouping means ordering by an aggregate that changes while you page through it.
+ * Saving one more report moves a comment you already passed to the top of page one,
+ * which duplicates rows or skips them. `docs/saved.md` refused sort-by-saved for
+ * exactly this reason and the argument applies unchanged here.
+ *
+ * `reportCount` rides along so the queue is still readable at a glance: one report is
+ * a hunch, five is a pattern.
+ *
+ * The comment and its author come along because a moderator's first question is *what
+ * did it say*. A queue of ids and reasons alone makes them open every row in a second
+ * tab before they can triage anything.
+ *
+ * The reporter is **not** included. A moderator needs to know a report exists and
+ * what it says, not who filed it. Naming reporters turns reporting into something
+ * with an audience, and the people who file them are exactly the ones who should not
+ * be visible to each other.
+ */
+export class CommentReportDto {
+  /** The composite primary key, `reporterId:commentId`. Carries no meaning to a reader. */
+  id: string;
+
+  /**
+   * The comment that was reported, in the public thread's own shape.
+   *
+   * `isMine` is always false here — a moderator is looking at somebody else's
+   * comment, and the field is meaningless in this context.
+   */
+  comment: CommentResponseDto;
+
+  /** How many people have reported this comment, including this reporter. */
+  reportCount: number;
+
+  /**
+   * What this reporter said, or an empty string when they said nothing.
+   *
+   * Not null on the response so a client renders the text without a fallback for a
+   * case that reads as a bug. The column is nullable because not every reporter
+   * explains themselves.
+   */
+  reason: string;
+
+  createdAt: Date;
+}
+
+/** One page of `GET /api/v1/comment-reports`. */
+export class PaginatedCommentReportsResponseDto {
+  items: CommentReportDto[];
+
+  /** Pass back as `?cursor=` to get the next page. `null` on the last page.
+   * @example 'Y2txOGYyYTFiMDAw'
+   */
+  nextCursor: string | null;
+}

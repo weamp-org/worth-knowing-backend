@@ -408,6 +408,35 @@ Deliberately **not** a like/dislike pair, and deliberately **not** a reply tree.
 [comments.md](./comments.md) for the reasoning and for the routes built on top of
 this table.
 
+### Comment reports
+
+`CommentReport(reporterId, commentId, reason, createdAt)` is a flag on a comment, and
+is what a dislike would have been. Migration `20261001090048_add_comment_reports`.
+
+The composite primary key `(reporterId, commentId)` makes reporting idempotent, so the
+write is `createMany({ skipDuplicates: true })` and a double-click is not punished.
+It also stops one account padding a comment's report count to make it look worse than
+it is — which a single-column unique index would not have done.
+
+Both foreign keys cascade, for different reasons:
+
+- `commentId` — a report exists only to point at a comment. When the comment is gone
+  there is nothing to act on, and a queue of reports about content that no longer
+  exists is worse than an empty one. Note this also means deleting a comment clears
+  its reports, so a queue never accumulates rows a moderator cannot act on.
+- `reporterId` — the row is the reporter's own note, not shared state. This is the one
+  place deleting an account removes something another person caused, and that is
+  correct.
+
+`reason` is nullable and capped at 500: optional, because a required reason is a
+dropdown somebody has to pick from before they can report something they plainly know
+is wrong, and short, because a report is a complaint rather than a second comment.
+
+The listing index is on all three ordering columns —
+`createdAt DESC, reporterId DESC, commentId DESC`. Both trailing columns are
+load-bearing: `createdAt` is not unique, and neither is `reporterId` on its own, so a
+keyset cursor over any prefix of this would skip or repeat rows.
+
 ### Granting ADMIN
 
 `UserRole` has **no write path in the API** — no endpoint can change a role, so

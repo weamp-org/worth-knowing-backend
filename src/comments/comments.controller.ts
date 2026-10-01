@@ -27,6 +27,7 @@ import {
 
 import { CommentsService } from './comments.service';
 import { CreateCommentDto } from './dtos/create-comment.dto';
+import { ReportCommentDto } from './dtos/report-comment.dto';
 import { ListCommentsQueryDto } from './dtos/list-comments-query.dto';
 import {
   CommentResponseDto,
@@ -158,5 +159,44 @@ export class CommentsController {
     @CurrentUserId() actorId: string,
   ) {
     return this.commentsService.remove(resourceId, id, actorId);
+  }
+
+  /**
+   * Flags a comment for a moderator. Signed in only.
+   *
+   * `204`, and the reported comment looks exactly as it did before — the report is
+   * invisible to everyone but an admin. Nothing about reporting is shown to the
+   * comment's author, because that would turn a quiet signal into a scoreboard.
+   *
+   * Idempotent, for the same reason save is: a `409` would punish a double-click when
+   * the state the caller asked for already holds. It also means one account cannot
+   * pad a comment's report count.
+   *
+   * Throttled on the comment write budget, since reporting is a write that a bored
+   * person could otherwise run a few thousand of.
+   */
+  @Post(':id/report')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Throttle(COMMENT_WRITE_THROTTLE)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Report a comment to the moderators',
+    description:
+      'Idempotent. Only admins see reported comments. You cannot report your own.',
+  })
+  @ApiBadRequestResponse({
+    description: 'Validation failed, or you tried to report your own comment',
+  })
+  @ApiUnauthorizedResponse({ description: 'No valid Clerk session' })
+  @ApiNotFoundResponse({
+    description: 'No comment with that id on this resource',
+  })
+  report(
+    @Param('resourceId') resourceId: string,
+    @Param('id') id: string,
+    @CurrentUserId() reporterId: string,
+    @Body() dto: ReportCommentDto,
+  ) {
+    return this.commentsService.report(resourceId, id, reporterId, dto);
   }
 }

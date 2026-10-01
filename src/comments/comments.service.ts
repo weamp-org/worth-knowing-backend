@@ -13,13 +13,52 @@ import {
   isCursorNotFound,
 } from '../pagination/cursor.util';
 import { CreateCommentDto } from './dtos/create-comment.dto';
+import { ReportCommentDto } from './dtos/report-comment.dto';
 import { DEFAULT_PAGE_SIZE } from './dtos/list-comments-query.dto';
 import {
   commentInclude,
   commentOrderBy,
+  commentReportOrderBy,
+  reportInclude,
+  toCommentReportResponse,
   toCommentResponse,
+  type CommentReportWithComment,
   type CommentWithRelations,
 } from './comment-read';
+
+/**
+ * Decodes a report-queue cursor into the composite primary key it encodes.
+ *
+ * The cursor is one base64url blob over `reporterId:commentId`, so it is decoded once
+ * and split rather than being two separate cursors — which is what
+ * `SavedResource`'s composite needs, and does not need here, because there the
+ * reporter is in the path and this is in neither.
+ *
+ * Split on the *first* colon and validate both halves with {@link decodeCursor}, so a
+ * hand-made cursor cannot smuggle a separator through into the second half. A colon
+ * is inside `IMPLAUSIBLE_ID`'s allowlist, so `decodeCursor` would happily pass one
+ * through on its own.
+ */
+function decodeReportCursor(cursor: string): {
+  reporterId: string;
+  commentId: string;
+} {
+  // One decode, which also applies `decodeCursor`'s base64 and character checks.
+  const decoded = decodeCursor(cursor);
+  const separator = decoded.indexOf(':');
+
+  // Both halves must be present. Anything beyond that is not worth defending: a
+  // well-formed cursor naming a row that does not exist resolves to an empty page,
+  // and Prisma parameterises the lookup, so there is no injection surface either way.
+  if (separator <= 0 || separator === decoded.length - 1) {
+    throw new BadRequestException('Invalid cursor');
+  }
+
+  return {
+    reporterId: decoded.slice(0, separator),
+    commentId: decoded.slice(separator + 1),
+  };
+}
 
 /**
  * Remarks on a resource.
@@ -148,6 +187,119 @@ export class CommentsService {
    * returning an emptied comment would invite a client to render "this comment was
    * deleted" from a body that says it has no text.
    */
+  /**
+   * Flags a comment for a moderator.
+   *
+   * What a dislike would have been. There is no ranking on this site for a vote to
+   * act on, so a downvote had no mechanical function and would only have punished
+   * people for sharing what they found worth knowing — the job it genuinely does,
+   * putting something in front of a person who can remove it, is this.
+   *
+   * **Idempotent**, and explicitly so, for the same reason save is: the primary key
+   * prevents a duplicate and `skipDuplicates` is race-safe in a way a read-then-write
+   * is not. A `409` would punish somebody for a double-click when the state they asked
+   * for already holds. The second reason it matters is that one account cannot pad a
+   * comment's report count to make it look worse than it is.
+   *
+   * Reporting your own comment is refused. Not as a punishment — there is nothing to
+   * gain by it — but because a queue containing reports an author filed on
+   * themselves is a queue a moderator has to read past.
+   *
+   * The resource is scoped for the same reason the delete is: a report filed through
+   * the wrong resource's path would point a moderator at a thread the reporter never
+   * saw.
+   *
+   * `204`, like the delete. There is nothing to render: a reported comment looks
+   * exactly as it did before, which is the point — the report is invisible to
+   * everyone but a moderator.
+   */
+  async report(
+    resourceId: string,
+    commentId: string,
+    reporterId: string,
+    dto: ReportCommentDto,
+  ): Promise<void> {
+    const comment = await this.prisma.comment.findUnique({
+      where: { id: commentId, resourceId },
+      select: { id: true, authorId: true },
+    });
+
+    // Same 404 as the delete, so the report route cannot be used to probe for comment
+    // ids on other resources either.
+    if (!comment) {
+      throw new NotFoundException(
+        `Comment ${commentId} not found on resource ${resourceId}`,
+      );
+    }
+
+    if (comment.authorId === reporterId) {
+      throw new BadRequestException('You cannot report your own comment');
+    }
+
+    await this.prisma.commentReport.createMany({
+      data: {
+        reporterId,
+        commentId,
+        ...(dto.reason?.trim() ? { reason: dto.reason.trim() } : {}),
+      },
+      skipDuplicates: true,
+    });
+  }
+
+  /**
+   * The report queue. Admin only, enforced by `@Roles` on the route.
+   *
+   * Newest first, paged over `CommentReport` rather than `Comment`, because the order
+   * here is *when somebody flagged it* — the same reasoning as `SavedService.findMine`
+   * and for the same reason: a two-year-old comment reported yesterday is the newest
+   * thing a moderator has to look at, and ordering by the comment's own `createdAt`
+   * would bury it.
+   *
+   * One row per report rather than per comment, so the ordering is over a plain
+   * column rather than an aggregate that changes while somebody is paging. See
+   * `CommentReportDto` for the argument in full.
+   */
+  async listReports(limit?: number, cursor?: string) {
+    const take = limit ?? DEFAULT_PAGE_SIZE;
+
+    let rows: CommentReportWithComment[];
+
+    try {
+      rows = await this.prisma.commentReport.findMany({
+        orderBy: commentReportOrderBy,
+        take: take + 1,
+        ...(cursor
+          ? {
+              // The composite primary key. `reporterId` is not unique alone — one
+              // person reports many comments — so the cursor carries both halves.
+              cursor: {
+                reporterId_commentId: decodeReportCursor(cursor),
+              },
+              skip: 1,
+            }
+          : undefined),
+        include: reportInclude,
+      });
+    } catch (error) {
+      if (isCursorNotFound(error)) {
+        throw new BadRequestException('Invalid cursor');
+      }
+      throw error;
+    }
+
+    const hasMore = rows.length > take;
+    const items = hasMore ? rows.slice(0, take) : rows;
+    const last = items.at(-1);
+
+    return {
+      items: items.map((row) => toCommentReportResponse(row)),
+      nextCursor:
+        hasMore && last
+          ? encodeCursor(`${last.reporterId}:${last.commentId}`)
+          : null,
+    };
+  }
+
   async remove(
     resourceId: string,
     commentId: string,

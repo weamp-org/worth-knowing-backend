@@ -105,6 +105,7 @@ model User {
   collections Collection[]
   savedResources SavedResource[]
   comments Comment[]
+  commentReports CommentReport[]
 }
 
 /// Every username that must not be claimable, whether or not anyone holds it.
@@ -376,4 +377,49 @@ model Comment {
   // every resource can have many, unlike collections or saves — so the scan is the
   // real cost rather than a hypothetical one.
   @@index([parentId])
+
+  reports CommentReport[]
+}
+
+/// Why somebody flagged a comment.
+///
+/// This is what a dislike would have been, and the reason it is a report instead is
+/// written up in `docs/comments.md`: there is no ranking on this site for a vote to
+/// act on, so a downvote has no mechanical function and only punishes. The job a
+/// downvote actually does — putting something in front of a person who can remove it
+/// — is this.
+model CommentReport {
+  reporterId String
+  commentId  String
+  createdAt  DateTime @default(now())
+
+  /// Optional. An empty queue of optional free text is still a usable queue, and a
+  /// required reason is a dropdown somebody has to pick from before they can report
+  /// something they plainly know is wrong. Capped short so a report is a
+  /// complaint, not a second comment — the place to argue is the thread.
+  reason String? @db.VarChar(500)
+
+  /// Cascading, unlike `Comment.authorId`. A report exists only to point at a
+  /// comment; when the comment is gone there is nothing left to act on, and a queue
+  /// of reports about content that no longer exists is worse than an empty one.
+  comment Comment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  /// Cascading, because a report belongs to the person who made it. This is the one
+  /// place an account deletion removes something another person caused, and that is
+  /// correct: the row is the reporter's own note, not shared state.
+  reporter User @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+
+  /// The same person cannot report the same comment twice. This is what makes
+  /// reporting idempotent without the service reading first, and it also stops one
+  /// account from padding a comment's report count to make it look worse than it is.
+  @@id([reporterId, commentId])
+
+  // Serves "how many people flagged this comment", which the admin queue groups by.
+  @@index([commentId])
+
+  // Serves the queue itself, `ORDER BY created_at DESC, reporter_id DESC,
+  // comment_id DESC`. `createdAt` is not unique, so a keyset cursor over a
+  // non-total order skips or repeats rows — and both trailing columns are needed for
+  // a *total* order, since `reporterId` alone repeats across a person's own reports.
+  @@index([createdAt(sort: Desc), reporterId(sort: Desc), commentId(sort: Desc)])
 }

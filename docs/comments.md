@@ -3,10 +3,10 @@
 Remarks on a resource. One flat, chronological list per resource, under
 `/resources/:id`.
 
-> **Status: read and write routes exist; reporting does not.** Listing, posting and
-> removing are in. Reporting and admin removal land next — see
-> [Still to be designed](#still-to-be-designed) for why that is the same release
-> rather than a later one.
+> **Status: threads, reporting and a moderation queue.** Listing, posting, removing,
+> reporting and an admin queue are all in. What is deliberately _not_ here is listed
+> under [Still to be designed](#still-to-be-designed) — automatic hiding and report
+> dismissal in particular.
 
 ## What this is for
 
@@ -26,15 +26,22 @@ answers — and because nesting means the listing cannot be asked without naming
 is being discussed, which is what stops an unbounded "all comments on the site"
 table from being the default.
 
-| Route                                               | Purpose                                   |
-| --------------------------------------------------- | ----------------------------------------- |
-| `GET /api/v1/resources/:resourceId/comments`        | The thread, newest first. **`@Public()`** |
-| `POST /api/v1/resources/:resourceId/comments`       | Comment, or reply with `parentId`. `201`  |
-| `DELETE /api/v1/resources/:resourceId/comments/:id` | Remove. Author or admin. `204`            |
+| Route                                                    | Purpose                                   |
+| -------------------------------------------------------- | ----------------------------------------- |
+| `GET /api/v1/resources/:resourceId/comments`             | The thread, newest first. **`@Public()`** |
+| `POST /api/v1/resources/:resourceId/comments`            | Comment, or reply with `parentId`. `201`  |
+| `DELETE /api/v1/resources/:resourceId/comments/:id`      | Remove. Author or admin. `204`            |
+| `POST /api/v1/resources/:resourceId/comments/:id/report` | Flag for a moderator. `204`               |
+| `GET /api/v1/comment-reports`                            | The queue. **Admin only**                 |
 
 The listing is the only `@Public()` route. Discussion is part of the public surface
 of a resource, and `commentCount` is already on the public resource response — a count
 a signed-out reader can see with nothing behind it would be the odd outcome.
+
+Reporting needs a session — a report has to be attributable in order to be deduped —
+but not an admin, because the point is that any reader can flag something. **Nothing
+about a report is visible to anybody but a moderator**, including the comment's
+author: showing it would turn a quiet signal into a scoreboard.
 
 `POST` is `201`, not an idempotent `200` as on `/saved`. Posting the same text twice
 is two comments; there is no unique row for the write to collapse onto.
@@ -100,6 +107,62 @@ account — with no reputation yet and throttling alone standing in the way.
 Commenting _on_ an anonymous contribution is fine. `resourceId` is the only thing
 tying a comment to a resource, and byline redaction happens on the resource read, so
 there is nothing in this module that could un-withhold a contributor.
+
+## Reporting is what a dislike was for
+
+`POST .../:id/report` files a `CommentReport` row. It is idempotent — `createMany` with
+`skipDuplicates`, against a composite primary key of `(reporterId, commentId)` — for
+the same reason save is, and for one extra reason that matters more here: **it stops
+one account padding a comment's report count** to make it look worse than it is.
+
+A `409` would punish a double-click when the state the caller asked for already holds.
+
+**You cannot report your own comment.** Not as a punishment — there is nothing to gain
+by it — but because a queue containing reports an author filed on themselves is a queue
+a moderator has to read past.
+
+**The reason is optional and free text.** A required reason is a dropdown somebody has
+to pick from before they can report something they plainly know is wrong. Capped at
+500 characters, well below a comment's own 2000, because a report is a complaint and
+the place to argue is the thread.
+
+Reporting is throttled on the same 10/hour budget as posting. It is a write, and a
+bored person could otherwise run a few thousand of them.
+
+### The queue is `/comment-reports`, admin only
+
+`@Roles(UserRole.ADMIN)` — the one place in this feature where the decorator can state
+the rule, because there is no owner-of-the-queue alternative to accept.
+
+It is mounted outside the resource path because a queue is not part of any one thread.
+A moderator wants everything that has been flagged, ordered by when it was flagged;
+asking for that through `/resources/:id/comments` would mean knowing which resource to
+ask about.
+
+**One row per report, not per reported comment.** That is the significant choice, and
+it has a real cost: a comment five people reported takes five rows. Grouping is what a
+moderator would rather act on, and it is not built — grouping means ordering by an
+aggregate that changes while somebody is paging. One more report moves a comment you
+already passed to the top of page one, duplicating or skipping rows. `docs/saved.md`
+refused sort-by-saved for exactly this reason and the argument applies unchanged.
+
+`reportCount` rides along on each row so the queue is still readable at a glance: one
+report is a hunch, five is a pattern.
+
+**The reporter is never named.** A moderator needs to know a report exists and what it
+said, not who filed it — naming reporters makes reporting something with an audience,
+and the people who file them are exactly the ones who should not be visible to each
+other. `reportInclude` therefore never selects `reporterId`.
+
+The comment comes along in its public shape, resolved through the same
+`toCommentResponse` a reader's thread uses, so a moderator reads a reported comment
+through the same code path a reader does. `isMine` is always false there: a moderator
+is looking at somebody else's comment, and forwarding their own id would make their
+own report render as their own comment.
+
+Paged over `CommentReport` by `createdAt DESC, reporterId DESC, commentId DESC` — all
+three columns are load-bearing, because `createdAt` is not unique and neither is
+`reporterId` on its own.
 
 ## The read shape
 
@@ -197,15 +260,24 @@ link to them, so a page needs it without a second request.
 
 ## Still to be designed
 
-- **Reporting** (`POST /resources/:resourceId/comments/:id/report`) and an admin view
-  of what has been reported. This is the one piece that must not be deferred further:
-  admin _removal_ already exists, so nothing is invisible — what is missing is the
-  signal that tells a moderator where to look. Until it lands, the moderation path
-  works only for somebody who already knows about a comment.
 - **Editing a comment.** Leaning **no**: delete-only, with no revision history. An
   edit with no visible marker lets somebody change what they argued after being called
   out on it, and nothing else in this codebase keeps a revision trail either.
+- **Reporting a resource or a tag.** The model is comment-specific
+  (`CommentReport.commentId`) and the queue is a comment queue. A resource can be
+  removed by its contributor or an admin today with nothing to prompt it — the same gap
+  `.../:id/report` closed for comments. Worth doing when a resource turns out to be
+  the thing people actually want to report.
+- **Automatic hiding at N reports.** Deliberately not built. Auto-hide lets a pile-on
+  make a comment disappear with no human deciding, and with no reputation on this site
+  yet there is nothing stopping three coordinated accounts from burying a thread.
+  Moderation stays a person reading a queue.
+- **Resolving a report without removing the comment.** A moderator who decides a
+  reported comment is fine has no way to say so, so the row stays in the queue forever.
+  Dismissing needs a `dismissedAt` and a filter; left out because there is not yet a
+  moderator to be served by it.
 
 ## Schema
 
-See [prisma.md](./prisma.md#comments).
+`Comment` and `CommentReport`, migrations `20261001083312_add_comment_model` and
+`20261001090048_add_comment_reports`. See [prisma.md](./prisma.md#comments).
