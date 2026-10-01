@@ -10,6 +10,25 @@ NestJS 11 API for Worth Knowing, with Clerk authentication, Prisma ORM, role-bas
 - **Resources** — Share a specific resource with a `why`, plus free-form tags, anonymous sharing, and keyset-paginated browsing
 - **Collections** — Gather resources into a titled, optionally described list; private by default, curated from anything on the site
 - **Saved resources** — Bookmark any resource in one click, independent of collections; a public save count on every resource response
+- **Comments** — A flat, chronological thread per resource with one level of reply; public to read, authored and removable by its author or an admin
+
+### Comments
+
+Discussion on a resource, under `/resources/:id`. One flat list per resource, newest
+first, with replies stored flat and rendered as a quote above the reply.
+
+**Deliberately no like and no dislike.** There is no ranking on this site for a vote
+to act on — the feed is chronological and sort-by-saved is refused on purpose — so a
+downvote would have no mechanical function and would only punish people for sharing
+what they found worth knowing. The job a downvote actually does, flagging something
+for removal, is a report.
+
+Replies are **one level and stored flat**: a real tree needs a cursor carrying a
+materialised path, which would mean rewriting the keyset primitive every list here
+depends on. A comment **outlives its author** (`authorId` is nullable and sets null),
+so a deleted account's remarks stay and read as removed rather than anonymous.
+
+See [docs/comments.md](docs/comments.md).
 
 ### Saved resources
 
@@ -37,7 +56,7 @@ anybody saves anything. Sorting belongs on a filtered view, opt-in — see
 - **Saved resources** — Bookmark any resource in one click, independent of collections; a public save count on every resource response
 - **REST API** — Global `/api/v1` prefix, users CRUD scaffold, `ValidationPipe` with whitelist/transform (with implicit conversion)
 - **Webhooks** — Clerk webhook handler for `user.created` / `user.updated` / `user.deleted` events with signature verification
-- **Rate Limiting** — `@nestjs/throttler`, 100 requests/min per user
+- **Rate Limiting** — `@nestjs/throttler`, 100 requests/min per user, tightened to 10/hour on comment creation
 - **Logging** — Structured JSON logging with `nestjs-pino`, request/response auto-logging, request ID propagation, sensitive header redaction, and a global exception filter
 - **Documentation** — Swagger UI at `/api/v1/documentation` (dev only), auto-generated from decorators and JSDoc
 - **Testing** — Jest unit tests (with mocked Prisma) and Supertest e2e tests
@@ -188,6 +207,12 @@ worth-knowing-backend/
 │   │   ├── saved.module.ts
 │   │   ├── saved.controller.ts     # /api/v1/saved (all authenticated)
 │   │   ├── saved.service.ts
+│   │   └── dtos/
+│   ├── comments/
+│   │   ├── comments.module.ts
+│   │   ├── comments.controller.ts  # /api/v1/resources/:resourceId/comments
+│   │   ├── comments.service.ts
+│   │   ├── comment-read.ts         # Read shape, isMine, quote truncation
 │   │   └── dtos/
 │   ├── users/
 │   │   ├── users.module.ts

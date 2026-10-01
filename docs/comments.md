@@ -3,10 +3,10 @@
 Remarks on a resource. One flat, chronological list per resource, under
 `/resources/:id`.
 
-> **Status: schema only.** The `Comment` model, migration
-> `20261001083312_add_comment_model` and `ResourceResponseDto.commentCount` exist.
-> There are no routes yet. This document records the decisions the model already
-> encodes, so they are settled before the service is written against them.
+> **Status: read and write routes exist; reporting does not.** Listing, posting and
+> removing are in. Reporting and admin removal land next — see
+> [Still to be designed](#still-to-be-designed) for why that is the same release
+> rather than a later one.
 
 ## What this is for
 
@@ -18,6 +18,106 @@ other thing a person contributes here is a link plus a reason, so the claim is
 checkable against the thing it describes. A comment is the first free-text, public,
 attributable thing on the site — prose about a link, rendered under a URL that gets
 shared. That difference is what shapes everything below.
+
+## Routes
+
+Nested under the resource, because a comment is meaningless without the `why` it
+answers — and because nesting means the listing cannot be asked without naming what
+is being discussed, which is what stops an unbounded "all comments on the site"
+table from being the default.
+
+| Route                                               | Purpose                                   |
+| --------------------------------------------------- | ----------------------------------------- |
+| `GET /api/v1/resources/:resourceId/comments`        | The thread, newest first. **`@Public()`** |
+| `POST /api/v1/resources/:resourceId/comments`       | Comment, or reply with `parentId`. `201`  |
+| `DELETE /api/v1/resources/:resourceId/comments/:id` | Remove. Author or admin. `204`            |
+
+The listing is the only `@Public()` route. Discussion is part of the public surface
+of a resource, and `commentCount` is already on the public resource response — a count
+a signed-out reader can see with nothing behind it would be the odd outcome.
+
+`POST` is `201`, not an idempotent `200` as on `/saved`. Posting the same text twice
+is two comments; there is no unique row for the write to collapse onto.
+
+`DELETE` is `204` with no body. Returning the comment with its text emptied would
+invite a client to render "deleted" from a body with nothing left in it.
+
+### The listing 404s before it paginates
+
+A resource id that does not exist is a `404`, checked with one cheap `select: { id }`
+read before the page query. The alternative is an empty thread, which reads as
+"nobody has commented on this" — a claim about the discussion rather than an answer
+about the resource, and a wrong one.
+
+### An unknown cursor is a 400
+
+Unlike the resource feed, where an unknown cursor is an empty page. The distinction is
+what has gone missing: a resource can be _deleted_ between pages and that is a normal
+thing to have happened, but a comment cannot be deleted without somebody choosing to,
+so a cursor that names no row is a client bug worth reporting.
+
+### Replies are capped at one level on write
+
+`POST` with a `parentId` that is itself a reply re-points at the grandparent, so the
+rendered thread stays one level deep whatever a client sends. See
+[Replies are one level](#replies-are-one-level-and-stored-flat).
+
+The parent is also scoped to the resource: a reply to a comment on another page is a
+`404`, because it would otherwise render on the wrong thread.
+
+### Delete is author-or-admin, in the service
+
+The same rule `ResourcesService` applies to a contribution and `CollectionsService`
+to a collection, and for the same reason — a comment is public content, so the product
+asks for moderation that does not depend on the author being reachable.
+
+It lives in the service rather than behind `@Roles` because `RolesGuard` short-circuits
+on `if (!requiredRoles) return true`, so a route that must accept _either_ an author or
+an admin cannot be expressed with that decorator.
+
+The authorization read is scoped to **both** ids, so a comment id from another thread
+is a `404` rather than a successful delete. Scoping before the role check is what
+keeps the route from becoming a way to confirm that a comment id exists somewhere on
+the site.
+
+### Comments are throttled far harder than the global limit
+
+`@Throttle({ default: { limit: 10, ttl: 3_600_000 } })` on `POST` — ten an hour. The
+global limit is 100 requests a _minute_, which is right for reads and generous enough
+that one account could post a hundred comments a minute. This is the only write on the
+site that produces public free text, and no amount of after-the-fact reporting
+un-sends it.
+
+Ten an hour is still a lot of conversation for one person.
+
+### No anonymity for a comment
+
+A resource can be shared anonymously; a comment cannot. A resource is link-plus-reason,
+so withholding the author still leaves the contribution legible. A comment is a
+position taken in public conversation, and an anonymous one is close to a burner
+account — with no reputation yet and throttling alone standing in the way.
+
+Commenting _on_ an anonymous contribution is fine. `resourceId` is the only thing
+tying a comment to a resource, and byline redaction happens on the resource read, so
+there is nothing in this module that could un-withhold a contributor.
+
+## The read shape
+
+`comment-read.ts` holds it, extracted for the same reason `resources/resource-read.ts`
+is: create and delete both return a comment, and without it each would grow its own
+copy of the flattening.
+
+- **`isMine` is server-decided.** Once the author has been reshaped into a summary,
+  there is nothing left for a client to compare against the session. The same split
+  `isOwner` and `isSaved` already use.
+- **A parent's body is truncated** to 160 characters with an ellipsis. A 2000-character
+  parent rendered in full inside every reply to it would bury the reply it frames. The
+  comment's own `body` is never truncated — a reader who opens a comment wants all of it.
+- **The parent's own `parentId` is not selected**, so there is nothing for a client to
+  recurse into a tree this API does not have.
+
+A null author means the account was deleted. That is a different state from a comment
+that was never attributable, and a client should word the two differently.
 
 ## There is no like, and no dislike
 
@@ -97,16 +197,14 @@ link to them, so a page needs it without a second request.
 
 ## Still to be designed
 
-Landed in the same release, not after it — see the reasoning in the module README:
-
-- Reporting (`POST /comments/:id/report`) and admin removal. A comment box with no
-  way to hide a comment and no way to report one is a spam cannon pointed at the
-  product.
-- Per-route throttling. The global limit is 100 requests/minute, which is fine for
-  reads and generous enough that one account could post 100 comments a minute.
-- Whether editing a comment is allowed at all. Leaning **no**: delete-only, with no
-  revision history. An edit with no visible marker lets somebody change what they
-  argued after being called out on it.
+- **Reporting** (`POST /resources/:resourceId/comments/:id/report`) and an admin view
+  of what has been reported. This is the one piece that must not be deferred further:
+  admin _removal_ already exists, so nothing is invisible — what is missing is the
+  signal that tells a moderator where to look. Until it lands, the moderation path
+  works only for somebody who already knows about a comment.
+- **Editing a comment.** Leaning **no**: delete-only, with no revision history. An
+  edit with no visible marker lets somebody change what they argued after being called
+  out on it, and nothing else in this codebase keeps a revision trail either.
 
 ## Schema
 

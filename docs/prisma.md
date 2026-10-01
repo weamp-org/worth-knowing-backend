@@ -405,7 +405,8 @@ there is no separate `@@index([resourceId])` here, unlike `SavedResource`.
 of a foreign key. Without it, removing a parent comment scans the whole table.
 
 Deliberately **not** a like/dislike pair, and deliberately **not** a reply tree. See
-[comments.md](./comments.md).
+[comments.md](./comments.md) for the reasoning and for the routes built on top of
+this table.
 
 ### Granting ADMIN
 

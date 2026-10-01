@@ -209,6 +209,12 @@ findByUsername(@Param('username') username: string, @Req() request: Request) {
 }
 ```
 
+The other two callers are `GET /resources`, which resolves anonymity per viewer, and
+`GET /resources/:resourceId/comments`, which sets `isMine` on each comment. Read the
+session even on a public route whenever the answer is per-viewer, or the client gets a
+default that is not a fact — on the comment thread that would mean `isMine` reading
+false for the person who just posted.
+
 The same reason applies to the e2e specs: `getAuth` is mocked with an
 `x-test-user-id` header standing in for the session.
 
