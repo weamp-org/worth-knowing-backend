@@ -32,7 +32,10 @@ table from being the default.
 | `POST /api/v1/resources/:resourceId/comments`            | Comment, or reply with `parentId`. `201`  |
 | `DELETE /api/v1/resources/:resourceId/comments/:id`      | Remove. Author or admin. `204`            |
 | `POST /api/v1/resources/:resourceId/comments/:id/report` | Flag for a moderator. `204`               |
-| `GET /api/v1/comment-reports`                            | The queue. **Admin only**                 |
+| `GET /api/v1/resource-reports`                           | The contribution queue. **Admin only**    |
+| `POST /api/v1/resource-reports/:resourceId/dismiss`      | Keep it, close the reports. `204`         |
+| `GET /api/v1/comment-reports`                            | The comment queue. **Admin only**         |
+| `POST /api/v1/comment-reports/:commentId/dismiss`        | Keep it, close the reports. `204`         |
 
 The listing is the only `@Public()` route. Discussion is part of the public surface
 of a resource, and `commentCount` is already on the public resource response — a count
@@ -242,6 +245,57 @@ The shared cursor pair lives in `pagination/cursor.util.ts` rather than being wr
 twice, and encodes **target first** (`commentId:reporterId`) so the two queues produce
 identical shapes even though both primary keys are actor-first.
 
+## Dismissing
+
+```
+POST /api/v1/resource-reports/:resourceId/dismiss   204, admin only
+POST /api/v1/comment-reports/:commentId/dismiss     204, admin only
+```
+
+"I looked at this and it stays." The third thing a moderator can do with a report,
+alongside removing it and doing nothing.
+
+**Without it there was no way to record that decision**, so the only way to work
+through a queue was to delete things — which quietly makes removal the answer to every
+report, including the ones where removal is wrong. A queue a moderator cannot clear is
+a queue they stop trusting: it grows forever, or they learn to ignore it, and both make
+the _next_ real report less likely to be caught. For `BROKEN_LINK` on a carefully
+written `why`, "keep it and fix the link" is very often the right answer and there was
+nowhere to say so.
+
+### It applies to every report on the target, not one of them
+
+A comment five people reported is five rows. Dismissing one would leave four still
+queued — which is to say the queue could never actually be worked through. So the write
+is `updateMany` over every report for the target, and both routes take the **target** id
+rather than a report id.
+
+### It is not a deletion
+
+The comment or contribution is untouched, the report rows are kept, and the queue simply
+stops returning them. That is what makes it reversible: un-dismissing is
+`dismissedAt = null` rather than an `INSERT` to undo. Both queues filter on
+`dismissedAt: null` — dismissed rows are **invisible, not shown-and-greyed**, because a
+greyed row in a queue is a row somebody has to reason about to know it can be skipped.
+
+Deliberately **no `dismissedBy`**. There is no audit surface to read it back on, and a
+column nobody queries is a claim about accountability this product does not make. The
+route therefore takes no session either.
+
+`204` and deliberately not `DELETE`: nothing is deleted, and the verb should not say
+otherwise.
+
+Idempotent — `where: { dismissedAt: null }` means a second dismissal matches nothing
+rather than erroring, because two moderators reaching for the same row at once is
+ordinary and neither should see a failure for it. Same reasoning as `POST /saved` and
+`DELETE /saved/:resourceId`.
+
+### A report filed after a dismissal comes back
+
+Dismissal is per `(target, reporter)` row, so a _new_ report from someone else is a new
+row with `dismissedAt: null` and reappears in the queue on its own. That is right — it
+is new information rather than a re-run of a decision somebody already made.
+
 ## The read shape
 
 `comment-read.ts` holds it, extracted for the same reason `resources/resource-read.ts`
@@ -341,19 +395,17 @@ link to them, so a page needs it without a second request.
 - **Editing a comment.** Leaning **no**: delete-only, with no revision history. An
   edit with no visible marker lets somebody change what they argued after being called
   out on it, and nothing else in this codebase keeps a revision trail either.
-- **Reporting a resource or a tag.** The model is comment-specific
-  (`CommentReport.commentId`) and the queue is a comment queue. A resource can be
-  removed by its contributor or an admin today with nothing to prompt it — the same gap
-  `.../:id/report` closed for comments. Worth doing when a resource turns out to be
-  the thing people actually want to report.
+- **Reporting a tag.** Resources and comments can be flagged; a tag cannot, and a tag is
+  reachable from every resource carrying it. Worth doing when a tag turns out to be the
+  thing people actually want to report.
 - **Automatic hiding at N reports.** Deliberately not built. Auto-hide lets a pile-on
   make a comment disappear with no human deciding, and with no reputation on this site
   yet there is nothing stopping three coordinated accounts from burying a thread.
   Moderation stays a person reading a queue.
-- **Resolving a report without removing the comment.** A moderator who decides a
-  reported comment is fine has no way to say so, so the row stays in the queue forever.
-  Dismissing needs a `dismissedAt` and a filter; left out because there is not yet a
-  moderator to be served by it.
+- **Un-dismissing, and a "show dismissed" view.** The column supports both and neither
+  is built: `dismissedAt = null` restores a row, and a filtered view would let a
+  moderator check what a colleague closed. Left out because a dismissal is currently a
+  one-way street and there is no evidence anyone needs either.
 
 ## Schema
 

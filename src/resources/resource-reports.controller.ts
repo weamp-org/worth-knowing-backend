@@ -1,4 +1,13 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -56,5 +65,38 @@ export class ResourceReportsController {
   @ApiForbiddenResponse({ description: 'Caller is not an admin' })
   findAll(@Query() query: ListResourcesQueryDto) {
     return this.resourcesService.listResourceReports(query.limit, query.cursor);
+  }
+
+  /**
+   * Marks a reported contribution as dealt with, without removing it.
+   *
+   * The third thing a moderator can do with a report, alongside removing the
+   * contribution and doing nothing. Without it the only way to work through the queue
+   * is to delete things — which quietly makes removal the answer to every report,
+   * including a `BROKEN_LINK` on a `why` that is worth keeping and fixing.
+   *
+   * `204`, and deliberately **not** `DELETE`: nothing is deleted. The contribution
+   * stays, the report rows stay, and the queue stops returning them.
+   *
+   * Takes the resource id rather than a report id, because a contribution several
+   * people reported is several rows and one decision has to close all of them. That is
+   * what makes a queue finishable.
+   *
+   * Idempotent: two moderators reaching for the same row at once is ordinary, and
+   * neither should see an error for it.
+   */
+  @Post(':resourceId/dismiss')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Roles(UserRole.ADMIN)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Dismiss every report on a contribution (admin only)',
+    description:
+      'The contribution is not removed — it stops appearing in the queue. Use the ordinary resource delete to remove it.',
+  })
+  @ApiUnauthorizedResponse({ description: 'No valid Clerk session' })
+  @ApiForbiddenResponse({ description: 'Caller is not an admin' })
+  dismiss(@Param('resourceId') resourceId: string) {
+    return this.resourcesService.dismiss(resourceId);
   }
 }

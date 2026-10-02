@@ -35,7 +35,11 @@ describe('Resources (e2e)', () => {
       update: jest.Mock;
       delete: jest.Mock;
     };
-    resourceReport: { createMany: jest.Mock; findMany: jest.Mock };
+    resourceReport: {
+      createMany: jest.Mock;
+      findMany: jest.Mock;
+      updateMany: jest.Mock;
+    };
   };
   let currentUserRole: UserRole;
 
@@ -46,6 +50,15 @@ describe('Resources (e2e)', () => {
     accessType: AccessType.PAID,
     why: 'The clearest explanation of human institutions I have read.',
   };
+
+  /**
+   * A partial matcher for a write payload.
+   *
+   * `expect.objectContaining` returns `any`, which trips no-unsafe-assignment once it
+   * is nested inside an object literal.
+   */
+  const dataContaining = (expected: Record<string, unknown>) =>
+    expect.objectContaining(expected) as unknown as object;
 
   /** A page of the resource report queue. */
   interface ReportsBody {
@@ -109,6 +122,7 @@ describe('Resources (e2e)', () => {
         },
         resourceReport: {
           createMany: jest.fn().mockResolvedValue({ count: 1 }),
+          updateMany: jest.fn().mockResolvedValue({ count: 3 }),
           findMany: jest.fn().mockResolvedValue([
             {
               reporterId: 'clerk_456',
@@ -1082,5 +1096,68 @@ describe('Resources (e2e)', () => {
 
   afterEach(async () => {
     await app.close();
+  });
+
+  describe('POST /resource-reports/:id/dismiss', () => {
+    const dismiss = '/api/v1/resource-reports/res_1/dismiss';
+
+    it('refuses a signed-out reader', async () => {
+      await request(app.getHttpServer()).post(dismiss).expect(401);
+    });
+
+    it('refuses a signed-in non-admin', async () => {
+      await asUser('clerk_123').post(dismiss).expect(403);
+
+      expect(prisma.resourceReport.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('lets an admin dismiss, and answers 204', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      const response = await asUser('clerk_123').post(dismiss).expect(204);
+
+      expect(response.text).toBe('');
+    });
+
+    it('dismisses every report on the contribution, not one of them', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      await asUser('clerk_123').post(dismiss).expect(204);
+
+      // A resource five people reported is five rows; dismissing one would leave four,
+      // which is to say the queue could never be worked through.
+      expect(prisma.resourceReport.updateMany).toHaveBeenCalledWith({
+        where: { resourceId: 'res_1', dismissedAt: null },
+        data: dataContaining({ dismissedAt: expect.anything() }),
+      });
+    });
+
+    it('does not remove the contribution', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      await asUser('clerk_123').post(dismiss).expect(204);
+
+      // Dismissal is "seen, keeping it". A BROKEN_LINK on a careful `why` is often a
+      // fix rather than a deletion, and conflating the two would make removal the
+      // answer to every report.
+      expect(prisma.resource.delete).not.toHaveBeenCalled();
+    });
+
+    it('succeeds on a second dismissal rather than erroring', async () => {
+      currentUserRole = UserRole.ADMIN;
+      prisma.resourceReport.updateMany.mockResolvedValue({ count: 0 });
+
+      await asUser('clerk_123').post(dismiss).expect(204);
+    });
+
+    it('hides dismissed reports from the queue', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      await asUser('clerk_123').get('/api/v1/resource-reports').expect(200);
+
+      expect(prisma.resourceReport.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { dismissedAt: null } }),
+      );
+    });
   });
 });

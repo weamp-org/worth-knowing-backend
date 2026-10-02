@@ -139,6 +139,9 @@ export class ResourcesService {
       rows = await this.prisma.resourceReport.findMany({
         orderBy: resourceReportOrderBy,
         take: take + 1,
+        // Dismissed reports are invisible, not shown-and-greyed — the same reasoning
+        // as the comment queue. See `CommentsService.listReports`.
+        where: { dismissedAt: null },
         ...(position
           ? {
               cursor: {
@@ -459,6 +462,35 @@ export class ResourcesService {
 
       throw error;
     }
+  }
+
+  /**
+   * Marks every report on a contribution as dealt with, without touching it.
+   *
+   * "I looked at this and it stays" — the counterpart to removing it. Without this a
+   * moderator cannot close anything out, so the queue either grows forever or gets
+   * ignored, and both make the next real report less likely to be caught.
+   *
+   * **Every report for the resource at once.** A resource five people reported is
+   * five rows; dismissing one would leave four, which is to say the queue could never
+   * be worked through.
+   *
+   * Worth being explicit that this is not the mild version of removing. A
+   * `BROKEN_LINK` report on a carefully written `why` is often a fix rather than a
+   * deletion, and this is how a moderator records having decided to keep it.
+   *
+   * Idempotent and `204` either way, for the reason on
+   * {@link CommentsService.dismiss}. Not a delete — the contribution and the report
+   * rows stay, and un-dismissing is `dismissedAt = null` rather than an insert to undo.
+   *
+   * Takes no actor id; `dismissedAt` records *when*, not *who*. See
+   * `ResourceReport.dismissedAt`.
+   */
+  async dismiss(resourceId: string): Promise<void> {
+    await this.prisma.resourceReport.updateMany({
+      where: { resourceId, dismissedAt: null },
+      data: { dismissedAt: new Date() },
+    });
   }
 
   async remove(id: string, actorId: string) {

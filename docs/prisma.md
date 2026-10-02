@@ -410,8 +410,8 @@ this table.
 
 ### Resource reports
 
-`ResourceReport(reporterId, resourceId, reason, detail, createdAt)` is a flag on a
-resource.
+`ResourceReport(reporterId, resourceId, reason, detail, dismissedAt, createdAt)` is a
+flag on a resource.
 Migrations `20261002115234_add_resource_reports` and
 `20261002120417_reorder_resource_report_key`.
 
@@ -443,8 +443,8 @@ onto a resource response. The queue has its own include in `resources/report-rea
 
 ### Comment reports
 
-`CommentReport(reporterId, commentId, reason, detail, createdAt)` is a flag on a
-comment, and
+`CommentReport(reporterId, commentId, reason, detail, dismissedAt, createdAt)` is a
+flag on a comment, and
 is what a dislike would have been. Migration `20261001090048_add_comment_reports`.
 
 The composite primary key `(reporterId, commentId)` makes reporting idempotent, so the

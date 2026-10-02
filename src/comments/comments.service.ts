@@ -242,6 +242,11 @@ export class CommentsService {
       rows = await this.prisma.commentReport.findMany({
         orderBy: commentReportOrderBy,
         take: take + 1,
+        // Dismissed reports are invisible, not shown-and-greyed. A moderator who has
+        // already decided to keep a comment should not have to look at it again on
+        // every pass, and a greyed row in a queue is a row somebody has to reason
+        // about to know it can be skipped.
+        where: { dismissedAt: null },
         ...(position
           ? {
               cursor: {
@@ -273,6 +278,41 @@ export class CommentsService {
           ? encodeReportCursor(last.commentId, last.reporterId)
           : null,
     };
+  }
+
+  /**
+   * Marks every report on a comment as dealt with, without touching the comment.
+   *
+   * "I looked at this and it stays" — which is not the same as removing it, and
+   * without this a moderator has no way to say so. A queue a moderator cannot clear
+   * is a queue they stop trusting: either it grows forever or they learn to ignore
+   * it, and both make the *next* real report less likely to be caught.
+   *
+   * **Every report for the comment at once**, because a comment five people reported
+   * is five rows and dismissing one would leave four still queued — which is to say
+   * the queue could never be worked through. That is the whole reason this exists, so
+   * a per-report version would have missed the point.
+   *
+   * Idempotent, and `204` either way. Dismissal is write-once in practice, but two
+   * moderators reaching for the same row at the same time is normal and neither
+   * should see an error.
+   *
+   * Deliberately **not** a delete. The comment stays, the report rows stay, and the
+   * action is a column becoming non-null — so un-dismissing is `dismissedAt = null`
+   * rather than an insert to undo.
+   *
+   * A report filed *after* a dismissal is a new row from a new reporter and comes
+   * back on its own, because it is new information rather than a re-run of a decision
+   * somebody already made.
+   *
+   * Takes no actor id: `dismissedAt` deliberately records *when* and not *who*, so
+   * there is nothing here to do with the session. See `CommentReport.dismissedAt`.
+   */
+  async dismiss(commentId: string): Promise<void> {
+    await this.prisma.commentReport.updateMany({
+      where: { commentId, dismissedAt: null },
+      data: { dismissedAt: new Date() },
+    });
   }
 
   async remove(

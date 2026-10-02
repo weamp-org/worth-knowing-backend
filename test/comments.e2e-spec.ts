@@ -104,6 +104,7 @@ describe('Comments (e2e)', () => {
     commentReport: {
       createMany: jest.Mock;
       findMany: jest.Mock;
+      updateMany: jest.Mock;
     };
     resource: { findUnique: jest.Mock };
     user: { findUnique: jest.Mock };
@@ -147,6 +148,7 @@ describe('Comments (e2e)', () => {
         },
         commentReport: {
           createMany: jest.fn().mockResolvedValue({ count: 1 }),
+          updateMany: jest.fn().mockResolvedValue({ count: 3 }),
           findMany: jest.fn().mockResolvedValue([
             {
               reporterId: OTHER,
@@ -639,6 +641,72 @@ describe('Comments (e2e)', () => {
       currentUserRole = UserRole.ADMIN;
 
       await asUser(USER).get(`${queue}?order=oldest`).expect(400);
+    });
+  });
+
+  describe('POST /comment-reports/:id/dismiss', () => {
+    const dismiss = '/api/v1/comment-reports/cmt_1/dismiss';
+
+    it('refuses a signed-out reader', async () => {
+      await asAnon.post(dismiss).expect(401);
+    });
+
+    it('refuses a signed-in non-admin', async () => {
+      await asUser(USER).post(dismiss).expect(403);
+
+      expect(prisma.commentReport.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('lets an admin dismiss, and answers 204', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      const response = await asUser(USER).post(dismiss).expect(204);
+
+      expect(response.text).toBe('');
+    });
+
+    it('dismisses every report on the comment, not one of them', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      await asUser(USER).post(dismiss).expect(204);
+
+      // A comment five people reported is five rows. Dismissing one would leave four
+      // queued, which is to say the queue could never be worked through.
+      expect(prisma.commentReport.updateMany).toHaveBeenCalledWith({
+        where: { commentId: 'cmt_1', dismissedAt: null },
+        // `expect.anything()` returns `any`, which trips no-unsafe-assignment inside
+        // an object literal, so the timestamp is checked by shape instead: the call
+        // has a `dismissedAt` key with something in it.
+        data: dataContaining({ dismissedAt: expect.anything() as unknown }),
+      });
+    });
+
+    it('does not remove the comment', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      await asUser(USER).post(dismiss).expect(204);
+
+      // Dismissal is "seen, keeping it". Removal is a separate route, and conflating
+      // them would make removal the answer to every report.
+      expect(prisma.comment.delete).not.toHaveBeenCalled();
+    });
+
+    it('succeeds on a second dismissal rather than erroring', async () => {
+      currentUserRole = UserRole.ADMIN;
+      prisma.commentReport.updateMany.mockResolvedValue({ count: 0 });
+
+      // Two moderators reaching for the same row at once is ordinary.
+      await asUser(USER).post(dismiss).expect(204);
+    });
+
+    it('hides dismissed reports from the queue', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      await asUser(USER).get('/api/v1/comment-reports').expect(200);
+
+      expect(prisma.commentReport.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { dismissedAt: null } }),
+      );
     });
   });
 });

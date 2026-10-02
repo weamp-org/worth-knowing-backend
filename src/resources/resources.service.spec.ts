@@ -38,9 +38,23 @@ describe('ResourcesService', () => {
       update: jest.Mock;
       delete: jest.Mock;
     };
-    resourceReport: { createMany: jest.Mock; findMany: jest.Mock };
+    resourceReport: {
+      createMany: jest.Mock;
+      findMany: jest.Mock;
+      updateMany: jest.Mock;
+    };
     user: { findUnique: jest.Mock };
   };
+
+  /**
+   * A partial matcher for a `data` payload.
+   *
+   * `expect.objectContaining` returns `any`, which trips no-unsafe-assignment once it
+   * is nested inside an object literal. Narrowed once here so each assertion can stay
+   * partial instead of pinning every field.
+   */
+  const dataContaining = (expected: Record<string, unknown>) =>
+    expect.objectContaining(expected) as unknown as object;
   let tags: { normalizeTags: jest.Mock; ensureTags: jest.Mock };
 
   beforeEach(async () => {
@@ -63,6 +77,7 @@ describe('ResourcesService', () => {
             resourceReport: {
               createMany: jest.fn().mockResolvedValue({ count: 1 }),
               findMany: jest.fn().mockResolvedValue([]),
+              updateMany: jest.fn().mockResolvedValue({ count: 3 }),
             },
             user: { findUnique: jest.fn().mockResolvedValue(null) },
           },
@@ -1319,6 +1334,47 @@ describe('ResourcesService', () => {
       await expect(
         service.listResourceReports(undefined, encodeCursor('res_gone:user_2')),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  describe('dismiss', () => {
+    it('marks every report on the contribution at once', async () => {
+      await service.dismiss('res_1');
+
+      // A resource five people reported is five rows; dismissing one would leave four,
+      // which is to say the queue could never be worked through.
+      expect(prisma.resourceReport.updateMany).toHaveBeenCalledWith({
+        where: { resourceId: 'res_1', dismissedAt: null },
+        data: dataContaining({ dismissedAt: expect.any(Date) }),
+      });
+    });
+
+    it('touches only undisismissed rows, so a second dismissal is a no-op', async () => {
+      await service.dismiss('res_1');
+
+      // Idempotency as a query condition rather than as an error: two moderators
+      // reaching for the same row at once is ordinary, and neither should see a
+      // failure for it.
+      expect(prisma.resourceReport.updateMany).toHaveBeenCalledWith(
+        dataContaining({ where: { resourceId: 'res_1', dismissedAt: null } }),
+      );
+    });
+
+    it('does not remove the contribution', async () => {
+      await service.dismiss('res_1');
+
+      // Dismissal is "seen, keeping it". Removing is a separate action with its own
+      // route — and conflating them would make removal the answer to every report,
+      // including a BROKEN_LINK on a `why` worth keeping and fixing.
+      expect(prisma.resource.delete).not.toHaveBeenCalled();
+    });
+
+    it('succeeds when there is nothing to dismiss', async () => {
+      prisma.resourceReport.updateMany.mockResolvedValue({ count: 0 });
+
+      // Already dismissed, or never reported. "It is not in the queue" is exactly the
+      // state the caller asked for, so there is nothing to report.
+      await expect(service.dismiss('res_unknown')).resolves.toBeUndefined();
     });
   });
 });

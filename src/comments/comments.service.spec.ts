@@ -63,6 +63,8 @@ describe('CommentsService', () => {
     commentReport: {
       createMany: jest.Mock;
       findMany: jest.Mock;
+      updateMany: jest.Mock;
+      deleteMany: jest.Mock;
     };
     resource: { findUnique: jest.Mock };
     user: { findUnique: jest.Mock };
@@ -87,6 +89,8 @@ describe('CommentsService', () => {
             commentReport: {
               createMany: jest.fn().mockResolvedValue({ count: 1 }),
               findMany: jest.fn().mockResolvedValue([]),
+              updateMany: jest.fn().mockResolvedValue({ count: 3 }),
+              deleteMany: jest.fn().mockResolvedValue({ count: 3 }),
             },
             resource: {
               findUnique: jest.fn().mockResolvedValue({ id: RESOURCE }),
@@ -583,6 +587,17 @@ describe('CommentsService', () => {
       prisma.commentReport.findMany.mockResolvedValue([reportRow()]);
     });
 
+    it('hides dismissed reports rather than showing them greyed', async () => {
+      await service.listReports();
+
+      // A moderator who already decided to keep a comment should not have to look at
+      // it again on every pass, and a greyed row is a row somebody has to reason
+      // about to know it can be skipped.
+      expect(prisma.commentReport.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { dismissedAt: null } }),
+      );
+    });
+
     it('orders by when it was flagged, not when the comment was written', async () => {
       await service.listReports();
 
@@ -709,6 +724,58 @@ describe('CommentsService', () => {
       await expect(
         service.listReports(undefined, encodeCursor(`cmt_gone:${OTHER}`)),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  describe('dismiss', () => {
+    it('marks every report on the comment at once', async () => {
+      await service.dismiss('cmt_1');
+
+      // A comment five people reported is five rows. Dismissing one would leave four
+      // queued, which is to say the queue could never be worked through — so a
+      // dismissal is a decision about the comment, not about one person's report.
+      expect(prisma.commentReport.updateMany).toHaveBeenCalledWith({
+        where: { commentId: 'cmt_1', dismissedAt: null },
+        // `expect.any` returns `any`, which trips no-unsafe-assignment inside an
+        // object literal. Typed through `dataContaining` for the same reason the
+        // create assertions use it.
+        data: dataContaining({ dismissedAt: expect.any(Date) as unknown }),
+      });
+    });
+
+    it('touches only undisismissed rows, so a second dismissal is a no-op', async () => {
+      await service.dismiss('cmt_1');
+
+      // Idempotency as a query condition rather than as an error: two moderators
+      // reaching for the same row at once is ordinary, and neither should see a
+      // failure for it.
+      expect(prisma.commentReport.updateMany).toHaveBeenCalledWith(
+        dataContaining({ where: { commentId: 'cmt_1', dismissedAt: null } }),
+      );
+    });
+
+    it('does not delete the comment', async () => {
+      await service.dismiss('cmt_1');
+
+      // Dismissal is "seen, keeping it". Removing is a separate action with its own
+      // route, and conflating them would make removal the answer to every report.
+      expect(prisma.comment.delete).not.toHaveBeenCalled();
+    });
+
+    it('does not delete the report rows either', async () => {
+      await service.dismiss('cmt_1');
+
+      // Nothing is deleted, which is what makes un-dismissing a matter of setting a
+      // column back to null rather than reconstructing rows that were never lost.
+      expect(prisma.commentReport.deleteMany).not.toHaveBeenCalled();
+    });
+
+    it('succeeds when there is nothing to dismiss', async () => {
+      prisma.commentReport.updateMany.mockResolvedValue({ count: 0 });
+
+      // Already dismissed, or never reported. "It is not in the queue" is exactly the
+      // state the caller asked for, so there is nothing to report.
+      await expect(service.dismiss('cmt_unknown')).resolves.toBeUndefined();
     });
   });
 });

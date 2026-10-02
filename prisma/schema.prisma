@@ -441,6 +441,26 @@ model CommentReport {
   commentId  String
   createdAt  DateTime @default(now())
 
+  /// When a moderator looked at this and decided the comment stays.
+  ///
+  /// Set on **every** report for a comment at once, not on one row, because a
+  /// comment five people reported is five rows — dismissing one of them would leave
+  /// four still queued, which is to say the queue could never actually be worked
+  /// through. A dismissal is a decision about the comment, not about one person's
+  /// report of it.
+  ///
+  /// **Not** a deletion. The comment is untouched and the rows are kept, which is
+  /// what makes this reversible: un-dismissing is `dismissedAt = null` rather than an
+  /// INSERT to undo. Deliberately no `dismissedBy` — there is no audit surface to
+  /// read it back on, and a column nobody queries is a claim about accountability
+  /// this product does not make.
+  ///
+  /// Null on every row either queue returns: both list routes filter on it, so a
+  /// dismissed report is invisible rather than shown-and-greyed. A report filed
+  /// *after* a dismissal is a new row from a new reporter and reappears on its own,
+  /// which is right — it is new information.
+  dismissedAt DateTime?
+
   /// Optional, and capped short. **The category is required and this is not**, and
   /// the split is deliberate: the category is what makes a moderator's queue sortable,
   /// while a required wall of free text would be exactly the friction that stops
@@ -498,6 +518,17 @@ model ResourceReport {
   reporterId String
   resourceId String
   createdAt  DateTime @default(now())
+
+  /// When a moderator looked at this and decided the contribution stays.
+  ///
+  /// Set on every report for a resource at once, for the same reason as
+  /// `CommentReport.dismissedAt`: a resource five people reported is five rows, and
+  /// dismissing one of them would leave the queue no emptier.
+  ///
+  /// Worth being explicit that dismissing and removing are different actions. A
+  /// `BROKEN_LINK` report on a careful `why` is very often a fix rather than a
+  /// deletion, and dismissal is how a moderator says "seen, keeping it".
+  dismissedAt DateTime?
 
   /// Optional, and capped short, for the same reasons as `CommentReport.detail`: a
   /// required free-text field is a wall in front of somebody who plainly knows
