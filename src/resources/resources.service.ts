@@ -12,10 +12,13 @@ import { TagsService } from '../tags/tags.service';
 import { UserRole } from '../generated/prisma/enums';
 import {
   decodeCursor,
+  decodeReportCursor,
   encodeCursor,
+  encodeReportCursor,
   isCursorNotFound,
 } from '../pagination/cursor.util';
 import { CreateResourceDto } from './dtos/create-resource.dto';
+import { ReportResourceDto } from './dtos/report-resource.dto';
 import { UpdateResourceDto } from './dtos/update-resource.dto';
 import { DEFAULT_PAGE_SIZE } from './dtos/list-resources-query.dto';
 import {
@@ -24,6 +27,12 @@ import {
   toResourceResponse,
   type ResourceWithRelations,
 } from './resource-read';
+import {
+  resourceReportOrderBy,
+  reportResourceInclude,
+  toResourceReportResponse,
+  type ResourceReportWithResource,
+} from './report-read';
 
 /** P2002: a unique index rejected the write. */
 function isUniqueViolation(error: unknown): boolean {
@@ -51,6 +60,116 @@ export class ResourcesService {
     private readonly prisma: PrismaService,
     private readonly tagsService: TagsService,
   ) {}
+
+  /**
+   * Flags a resource for a moderator.
+   *
+   * The higher-leverage of the two report kinds, and the one that was missing first.
+   * A bad *comment* is one person's remark under one page; a bad *resource* is a link
+   * that gets shared onward, repeatedly, to people who never saw the flag. That is
+   * why `ResourceReport` is a table of its own rather than folded into the comment
+   * one — see its doc comment for the Postgres reason that forces it.
+   *
+   * Idempotent, for the same reason reporting a comment is: the composite primary key
+   * refuses the duplicate and `skipDuplicates` is race-safe in a way a read-then-write
+   * is not. It also stops one account padding a resource's report count to make it
+   * look worse than it is.
+   *
+   * Reporting your own contribution is refused. The contributor can delete it — that
+   * is the self-service correction this API already offers, and `DELETE /resources/:id`
+   * is reachable by them — so a report from the author is never what is needed, and a
+   * queue containing one is a queue a moderator has to read past.
+   *
+   * `204`, and the resource looks exactly as it did before. A report is invisible to
+   * every reader, **including the contributor**: telling them would turn a quiet
+   * signal into a scoreboard, and unlike a deletion it has no effect they might
+   * otherwise need to know about.
+   */
+  async report(
+    resourceId: string,
+    reporterId: string,
+    dto: ReportResourceDto,
+  ): Promise<void> {
+    const resource = await this.prisma.resource.findUnique({
+      where: { id: resourceId },
+      select: { id: true, contributorId: true },
+    });
+
+    if (!resource)
+      throw new NotFoundException(`Resource ${resourceId} not found`);
+
+    if (resource.contributorId === reporterId) {
+      throw new BadRequestException('You cannot report your own contribution');
+    }
+
+    await this.prisma.resourceReport.createMany({
+      data: {
+        reporterId,
+        resourceId,
+        ...(dto.reason?.trim() ? { reason: dto.reason.trim() } : {}),
+      },
+      skipDuplicates: true,
+    });
+  }
+
+  /**
+   * The resource report queue. Admin only, enforced by `@Roles` on the route.
+   *
+   * Newest report first, paged over `ResourceReport` rather than `Resource`, because
+   * the order here is *when somebody flagged it* — the same reasoning as
+   * `SavedService.findMine` and `CommentsService.listReports`. A two-year-old
+   * contribution reported yesterday is the newest thing a moderator has to look at,
+   * and ordering by the resource's own `createdAt` would bury it at the bottom.
+   *
+   * One row per report rather than per reported resource, so the ordering is over a
+   * plain column instead of an aggregate that changes while somebody is paging.
+   */
+  async listResourceReports(limit?: number, cursor?: string) {
+    const take = limit ?? DEFAULT_PAGE_SIZE;
+
+    // Decoded outside the query so the two halves can be named for what they are here.
+    // `decodeReportCursor` speaks in `targetId` because the shape is shared with the
+    // comment queue; this one points at a resource.
+    const position = cursor ? decodeReportCursor(cursor) : null;
+
+    let rows: ResourceReportWithResource[];
+
+    try {
+      rows = await this.prisma.resourceReport.findMany({
+        orderBy: resourceReportOrderBy,
+        take: take + 1,
+        ...(position
+          ? {
+              cursor: {
+                reporterId_resourceId: {
+                  reporterId: position.reporterId,
+                  resourceId: position.targetId,
+                },
+              },
+              skip: 1,
+            }
+          : undefined),
+        include: { resource: { include: reportResourceInclude } },
+      });
+    } catch (error) {
+      if (isCursorNotFound(error)) {
+        throw new BadRequestException('Invalid cursor');
+      }
+      throw error;
+    }
+
+    const hasMore = rows.length > take;
+    const items = hasMore ? rows.slice(0, take) : rows;
+    const last = items.at(-1);
+
+    return {
+      items: items.map((row) => toResourceReportResponse(row)),
+      nextCursor:
+        hasMore && last
+          ? encodeReportCursor(last.resourceId, last.reporterId)
+          : null,
+    };
+  }
 
   /**
    * Whether this contributor already shared this exact link.

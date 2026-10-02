@@ -38,11 +38,6 @@ The listing is the only `@Public()` route. Discussion is part of the public surf
 of a resource, and `commentCount` is already on the public resource response — a count
 a signed-out reader can see with nothing behind it would be the odd outcome.
 
-Reporting needs a session — a report has to be attributable in order to be deduped —
-but not an admin, because the point is that any reader can flag something. **Nothing
-about a report is visible to anybody but a moderator**, including the comment's
-author: showing it would turn a quiet signal into a scoreboard.
-
 `POST` is `201`, not an idempotent `200` as on `/saved`. Posting the same text twice
 is two comments; there is no unique row for the write to collapse onto.
 
@@ -108,41 +103,72 @@ Commenting _on_ an anonymous contribution is fine. `resourceId` is the only thin
 tying a comment to a resource, and byline redaction happens on the resource read, so
 there is nothing in this module that could un-withhold a contributor.
 
-## Reporting is what a dislike was for
+## Reporting
 
-`POST .../:id/report` files a `CommentReport` row. It is idempotent — `createMany` with
-`skipDuplicates`, against a composite primary key of `(reporterId, commentId)` — for
-the same reason save is, and for one extra reason that matters more here: **it stops
-one account padding a comment's report count** to make it look worse than it is.
+Two kinds, both replacing the dislike this feature deliberately has no vote for:
 
-A `409` would punish a double-click when the state the caller asked for already holds.
+| Route                                             | Flags                  | Who can file one                         |
+| ------------------------------------------------- | ---------------------- | ---------------------------------------- |
+| `POST /resources/:resourceId/report`              | the contribution       | any signed-in reader but its contributor |
+| `POST /resources/:resourceId/comments/:id/report` | a comment              | any signed-in reader but its author      |
+| `GET /resource-reports`                           | the contribution queue | admin only                               |
+| `GET /comment-reports`                            | the comment queue      | admin only                               |
 
-**You cannot report your own comment.** Not as a punishment — there is nothing to gain
-by it — but because a queue containing reports an author filed on themselves is a queue
+**A contribution is the higher-leverage report.** A bad comment is one person's remark
+under one page; a bad link gets shared onward, repeatedly, to people who never saw the
+flag. That is why resource reporting exists and why it is not folded into the comment
+one.
+
+**Neither is an anonymity escape, and a comment is not a back door around one.**
+Commenting _on_ an anonymously shared contribution is fine: `resourceId` is the only
+thing tying a comment to a resource, and byline redaction happens on the resource read,
+so nothing in the comments module can un-withhold a contributor.
+
+### Both are idempotent, and that matters more here than for a save
+
+`createMany` with `skipDuplicates`, against a composite primary key of
+`(reporterId, targetId)`. A `409` would punish a double-click when the state the caller
+asked for already holds — but the second reason matters more: **it stops one account
+padding a report count** to make something look worse than it is. A unique index on the
+target alone would have allowed that.
+
+**You cannot report your own.** Not as a punishment — there is nothing to gain by it.
+The contributor can delete their own contribution and the author can delete their own
+comment, so a self-report is never what is needed, and a queue containing one is a queue
 a moderator has to read past.
 
-**The reason is optional and free text.** A required reason is a dropdown somebody has
-to pick from before they can report something they plainly know is wrong. Capped at
-500 characters, well below a comment's own 2000, because a report is a complaint and
-the place to argue is the thread.
+**The reason is optional and free text**, capped at 500. A required reason is a
+dropdown somebody has to pick from before they can flag something they plainly know is
+wrong — a link that just installed something does not need a category, it needs
+sending. Short, because a report is a complaint rather than a second contribution.
 
-Reporting is throttled on the same 10/hour budget as posting. It is a write, and a
-bored person could otherwise run a few thousand of them.
+Both are throttled on the same 10/hour budget as posting, via `PUBLIC_WRITE_THROTTLE`
+in `src/throttle.ts`. Reporting is the same kind of act as writing, and three copies of
+that number would be free to drift.
 
-### The queue is `/comment-reports`, admin only
+### Two tables, not one polymorphic `Report`
 
-`@Roles(UserRole.ADMIN)` — the one place in this feature where the decorator can state
-the rule, because there is no owner-of-the-queue alternative to accept.
+The single-table design was the first plan and it cannot work. Postgres makes
+`PRIMARY KEY` columns implicitly `NOT NULL`, so a nullable target cannot be in a
+composite key; and `@@unique([reporterId, resourceId])` does nothing for a comment row,
+because Postgres treats NULLs as _distinct_ in a unique index. The unified table would
+have had to enforce idempotency in application code — a read-then-write that loses the
+race a primary key does not — and refusing the duplicate is the whole point of keying a
+report on `(target, reporter)`.
 
-It is mounted outside the resource path because a queue is not part of any one thread.
-A moderator wants everything that has been flagged, ordered by when it was flagged;
-asking for that through `/resources/:id/comments` would mean knowing which resource to
-ask about.
+Two near-duplicated models buy back DB-enforced idempotency and a real cascade. See
+`resources/report-read.ts` and the schema comments.
 
-**One row per report, not per reported comment.** That is the significant choice, and
-it has a real cost: a comment five people reported takes five rows. Grouping is what a
+### The queues
+
+Both are `@Roles(UserRole.ADMIN)` — the one place where the decorator can state the
+rule, since there is no owner-of-the-queue alternative for a non-admin to be. Mounted
+outside the resource path, because a queue is not part of any one resource or thread.
+
+**One row per report, not per reported thing.** That is the significant choice, and it
+has a real cost: a comment five people reported takes five rows. Grouping is what a
 moderator would rather act on, and it is not built — grouping means ordering by an
-aggregate that changes while somebody is paging. One more report moves a comment you
+aggregate that changes while somebody is paging. One more report moves something you
 already passed to the top of page one, duplicating or skipping rows. `docs/saved.md`
 refused sort-by-saved for exactly this reason and the argument applies unchanged.
 
@@ -152,17 +178,32 @@ report is a hunch, five is a pattern.
 **The reporter is never named.** A moderator needs to know a report exists and what it
 said, not who filed it — naming reporters makes reporting something with an audience,
 and the people who file them are exactly the ones who should not be visible to each
-other. `reportInclude` therefore never selects `reporterId`.
+other. Neither report include selects `reporterId`.
 
-The comment comes along in its public shape, resolved through the same
-`toCommentResponse` a reader's thread uses, so a moderator reads a reported comment
-through the same code path a reader does. `isMine` is always false there: a moderator
-is looking at somebody else's comment, and forwarding their own id would make their
-own report render as their own comment.
+**An anonymously shared contribution is still redacted in the resource queue.**
+`toResourceReportResponse` routes it through the ordinary public `toResourceResponse`
+with no viewer, so a moderator does not get to un-withhold a name. `isAnonymous` is a
+promise the contributor made, and the person most likely to be tempted to break it is
+not a stranger on the feed but a moderator with a queue in front of them. They do not
+need the name to decide that a link is spam.
 
-Paged over `CommentReport` by `createdAt DESC, reporterId DESC, commentId DESC` — all
-three columns are load-bearing, because `createdAt` is not unique and neither is
-`reporterId` on its own.
+The comment comes along in its public shape too, through the same `toCommentResponse`
+a reader's thread uses. `isMine` is always false there: a moderator is looking at
+somebody else's comment, and forwarding their own id would make their own report render
+as their own comment.
+
+Both queues page over their report table — newest _report_ first, not newest target —
+for the same reason `SavedService.findMine` pages over the save. Ordering
+`createdAt DESC, reporterId DESC, targetId DESC`; all three columns are load-bearing,
+because `createdAt` is not unique and neither is `reporterId` alone.
+
+An unknown cursor is a `400` in both queues, where the resource feed would answer with
+an empty page. A comment or a resource only disappears when somebody chooses to remove
+it, so a cursor naming no row is a client bug worth reporting.
+
+The shared cursor pair lives in `pagination/cursor.util.ts` rather than being written
+twice, and encodes **target first** (`commentId:reporterId`) so the two queues produce
+identical shapes even though both primary keys are actor-first.
 
 ## The read shape
 

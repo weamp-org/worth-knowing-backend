@@ -3,6 +3,8 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Patch,
   Post,
@@ -12,6 +14,7 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { getAuth } from '@clerk/express';
+import { Throttle } from '@nestjs/throttler';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -28,6 +31,7 @@ import { ResourcesService } from './resources.service';
 import { CreateResourceDto } from './dtos/create-resource.dto';
 import { UpdateResourceDto } from './dtos/update-resource.dto';
 import { ListResourcesQueryDto } from './dtos/list-resources-query.dto';
+import { ReportResourceDto } from './dtos/report-resource.dto';
 import {
   PaginatedResourcesResponseDto,
   ResourceResponseDto,
@@ -36,6 +40,7 @@ import { ClerkAuthGuard } from '../clerk-auth/clerk-auth.guard';
 import { CurrentUserId } from '../clerk-auth/current-user.decorator';
 import { RolesGuard } from '../roles/roles.guard';
 import { Public } from '../public/public.decorator';
+import { PUBLIC_WRITE_THROTTLE } from '../throttle';
 
 @UseGuards(ClerkAuthGuard, RolesGuard)
 @Controller('resources')
@@ -151,6 +156,44 @@ export class ResourcesController {
    * route declares no `@Roles`, so a rule that admits either an owner or an
    * admin has to be expressed where the role is actually read.
    */
+  /**
+   * Flags a resource for a moderator.
+   *
+   * Sits on the resource rather than on the comment because a contribution is the
+   * higher-leverage thing to remove: a bad comment is one person's remark under one
+   * page, while a bad link gets shared onward to people who never saw the flag.
+   *
+   * `204`, and nothing about it is visible to any reader — including the
+   * contributor. A report is a quiet signal, and telling somebody they were reported
+   * would turn it into a scoreboard. Unlike a comment report there is nothing on the
+   * page that says "this was flagged", so the only response is silence either way.
+   *
+   * Idempotent, and the composite primary key is what makes it so: one account
+   * cannot pad a resource's report count to make it look worse than it is.
+   */
+  @Post(':id/report')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Throttle(PUBLIC_WRITE_THROTTLE)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Report a resource to the moderators',
+    description:
+      'Idempotent. Only admins see reported resources. You cannot report your own contribution.',
+  })
+  @ApiBadRequestResponse({
+    description:
+      'Validation failed, or you tried to report your own contribution',
+  })
+  @ApiUnauthorizedResponse({ description: 'No valid Clerk session' })
+  @ApiNotFoundResponse({ description: 'No resource with that id' })
+  report(
+    @Param('id') id: string,
+    @CurrentUserId() reporterId: string,
+    @Body() dto: ReportResourceDto,
+  ) {
+    return this.resourcesService.report(id, reporterId, dto);
+  }
+
   @Delete(':id')
   @ApiBearerAuth()
   @ApiOperation({

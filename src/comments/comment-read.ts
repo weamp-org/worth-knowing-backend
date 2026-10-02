@@ -100,7 +100,12 @@ export const commentReportOrderBy = [
   { commentId: 'desc' },
 ] satisfies Prisma.CommentReportOrderByWithRelationInput[];
 
-/** A report row as read, before any reshaping. */
+/**
+ * A report row as read, before any reshaping.
+ *
+ * The composite key is ordered `(commentId, reporterId)`, matching
+ * `CommentReport`'s primary key and `encodeReportCursor`'s `targetId:reporterId`.
+ */
 export type CommentReportWithComment = Prisma.CommentReportGetPayload<{
   include: typeof reportInclude;
 }>;
@@ -230,7 +235,7 @@ export function toCommentReportResponse(
   report: CommentReportWithComment,
 ): CommentReportResponse {
   return {
-    id: `${report.reporterId}:${report.commentId}`,
+    id: `${report.commentId}:${report.reporterId}`,
     comment: toCommentResponse(report.comment),
     reportCount: report.comment._count.reports,
     reason: report.reason ?? '',

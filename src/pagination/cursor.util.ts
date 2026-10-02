@@ -82,10 +82,61 @@ export function decodeCursor(cursor: string): string {
  * Shared with {@link CollectionsService} for the same reason the encoder is: the
  * Prisma error codes are not a per-feature detail, and a second list of them
  * would eventually be a shorter one.
+ *
+ * The two report queues read the same codes but treat a missing row as a client bug
+ * rather than as a normal thing that happened — a comment or a resource only
+ * disappears when somebody chooses to remove it. The predicate is identical either
+ * way; what differs is the exception the caller wraps it in.
  */
 export function isCursorNotFound(error: unknown): boolean {
   return (
     error instanceof Prisma.PrismaClientKnownRequestError &&
     (error.code === 'P2025' || error.code === 'P2023')
   );
+}
+
+/**
+ * Decodes a report-queue cursor into a `(targetId, reporterId)` pair.
+ *
+ * Report queues page over a composite primary key — `(reporterId, commentId)` and
+ * `(reporterId, resourceId)` — because that is what makes reporting idempotent.
+ * Neither half is unique alone, so the opaque cursor has to carry both, which is the
+ * one case here where a bare id is not enough.
+ *
+ * One base64url blob over `targetId:reporterId` — **target first**, unlike the primary
+ * key's actor-first order — so the two queues encode identically and the callers can
+ * name the halves for what they point at. Decoded once, which also applies
+ * {@link decodeCursor}'s base64 and character checks; the split is on the **first**
+ * colon.
+ *
+ * @throws BadRequestException when the cursor does not decode to two non-empty parts
+ */
+export function decodeReportCursor(cursor: string): {
+  targetId: string;
+  reporterId: string;
+} {
+  const decoded = decodeCursor(cursor);
+  const separator = decoded.indexOf(':');
+
+  // Both halves must be present. Defending past that is not worth it: a well-formed
+  // cursor naming a row that does not exist resolves to an empty page, and Prisma
+  // parameterises the lookup, so there is no injection surface either way. A colon is
+  // inside `IMPLAUSIBLE_ID`'s allowlist, so a cursor carrying more than one is
+  // possible and simply lands in the second half, where it matches nothing.
+  if (separator <= 0 || separator === decoded.length - 1) {
+    throw new BadRequestException('Invalid cursor');
+  }
+
+  return {
+    targetId: decoded.slice(0, separator),
+    reporterId: decoded.slice(separator + 1),
+  };
+}
+
+/** Encodes a report-queue cursor. The inverse of {@link decodeReportCursor}. */
+export function encodeReportCursor(
+  targetId: string,
+  reporterId: string,
+): string {
+  return encodeCursor(`${targetId}:${reporterId}`);
 }

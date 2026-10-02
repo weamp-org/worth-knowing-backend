@@ -33,6 +33,7 @@ describe('ResourcesService', () => {
       update: jest.Mock;
       delete: jest.Mock;
     };
+    resourceReport: { createMany: jest.Mock; findMany: jest.Mock };
     user: { findUnique: jest.Mock };
   };
   let tags: { normalizeTags: jest.Mock; ensureTags: jest.Mock };
@@ -53,6 +54,10 @@ describe('ResourcesService', () => {
               findFirst: jest.fn().mockResolvedValue(null),
               update: jest.fn(),
               delete: jest.fn(),
+            },
+            resourceReport: {
+              createMany: jest.fn().mockResolvedValue({ count: 1 }),
+              findMany: jest.fn().mockResolvedValue([]),
             },
             user: { findUnique: jest.fn().mockResolvedValue(null) },
           },
@@ -1054,6 +1059,221 @@ describe('ResourcesService', () => {
         NotFoundException,
       );
       expect(prisma.resource.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('reporting', () => {
+    const REPORTED = 'res_1';
+    const REPORTER = 'user_2';
+    const CONTRIBUTOR = 'user_1';
+
+    beforeEach(() => {
+      prisma.resource.findUnique.mockResolvedValue({
+        id: REPORTED,
+        contributorId: CONTRIBUTOR,
+      });
+    });
+
+    it('files the report against the resource and the session user', async () => {
+      await service.report(REPORTED, REPORTER, {
+        reason: 'This link just installed something.',
+      });
+
+      expect(prisma.resourceReport.createMany).toHaveBeenCalledWith({
+        data: {
+          reporterId: REPORTER,
+          resourceId: REPORTED,
+          reason: 'This link just installed something.',
+        },
+        skipDuplicates: true,
+      });
+    });
+
+    it('skips duplicates, so a double-click is not punished and cannot pad the count', async () => {
+      await service.report(REPORTED, REPORTER, {});
+
+      expect(prisma.resourceReport.createMany).toHaveBeenCalledWith(
+        expect.objectContaining({ skipDuplicates: true }),
+      );
+    });
+
+    it('trims a whitespace-only reason into no reason at all', async () => {
+      await service.report(REPORTED, REPORTER, { reason: '   ' });
+
+      expect(prisma.resourceReport.createMany).toHaveBeenCalledWith({
+        data: { reporterId: REPORTER, resourceId: REPORTED },
+        skipDuplicates: true,
+      });
+    });
+
+    it('refuses a report on your own contribution', async () => {
+      await expect(
+        service.report(REPORTED, CONTRIBUTOR, {}),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(prisma.resourceReport.createMany).not.toHaveBeenCalled();
+    });
+
+    it('404s for a resource that is not there', async () => {
+      prisma.resource.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.report('res_missing', REPORTER, {}),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('lets anybody signed in report somebody else’s contribution', async () => {
+      // No role check at all: reporting is not a privileged act, which is the point.
+      await service.report(REPORTED, REPORTER, {});
+
+      expect(prisma.resourceReport.createMany).toHaveBeenCalled();
+    });
+  });
+
+  describe('listResourceReports', () => {
+    const row = (over: Record<string, unknown> = {}) => ({
+      reporterId: 'user_2',
+      resourceId: 'res_1',
+      reason: 'This link just installed something.',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+      resource: {
+        id: 'res_1',
+        title: 'Sapiens',
+        url: 'https://example.com/sapiens',
+        type: ResourceType.BOOK,
+        accessType: AccessType.PAID,
+        why: 'The clearest account I have read.',
+        isAnonymous: false,
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+        contributorId: 'user_1',
+        contributor: {
+          id: 'user_1',
+          name: 'Ada',
+          imageUrl: null,
+          username: 'ada',
+          usernameLower: 'ada',
+          isProfilePrivate: false,
+        },
+        tags: [],
+        _count: { savedResources: 0, comments: 0, reports: 4 },
+      },
+      ...over,
+    });
+
+    beforeEach(() => {
+      prisma.resourceReport.findMany.mockResolvedValue([row()]);
+    });
+
+    it('orders by when it was flagged, not when it was shared', async () => {
+      await service.listResourceReports();
+
+      // Paged over the report, for the same reason the saved list is: a two-year-old
+      // contribution reported yesterday is the newest thing a moderator has to see.
+      expect(prisma.resourceReport.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderBy: [
+            { createdAt: 'desc' },
+            { reporterId: 'desc' },
+            { resourceId: 'desc' },
+          ],
+        }),
+      );
+    });
+
+    it('never names the reporter', async () => {
+      const page = await service.listResourceReports();
+
+      expect(page.items[0]).not.toHaveProperty('reporterId');
+      expect(page.items[0]).not.toHaveProperty('reporter');
+      expect(page.items[0].id).toBe(`res_1:user_2`);
+    });
+
+    it('carries the report count so the queue is triageable at a glance', async () => {
+      const page = await service.listResourceReports();
+
+      expect(page.items[0].reportCount).toBe(4);
+    });
+
+    it('still redacts an anonymously shared contribution', async () => {
+      // `toResourceReportResponse` routes the resource through the ordinary public
+      // read, so a moderator does not get to un-withhold a name. They do not need it
+      // to decide a link is spam, and this is the person most likely to be tempted.
+      prisma.resourceReport.findMany.mockResolvedValue([
+        row({ resource: { ...row().resource, isAnonymous: true } }),
+      ]);
+
+      const page = await service.listResourceReports();
+
+      expect(page.items[0].resource.contributor).toBeNull();
+      expect(page.items[0].resource.contributorId).toBeNull();
+    });
+
+    it('flattens an absent reason to an empty string', async () => {
+      prisma.resourceReport.findMany.mockResolvedValue([row({ reason: null })]);
+
+      const page = await service.listResourceReports();
+
+      expect(page.items[0].reason).toBe('');
+    });
+
+    it('asks for one row over the page, so hasMore needs no COUNT(*)', async () => {
+      await service.listResourceReports(5);
+
+      expect(prisma.resourceReport.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 6 }),
+      );
+    });
+
+    it('trims the extra row and cursors on the last kept one', async () => {
+      prisma.resourceReport.findMany.mockResolvedValue([
+        row({ resourceId: 'res_a' }),
+        row({ resourceId: 'res_b' }),
+        row({ resourceId: 'res_c' }),
+      ]);
+
+      const page = await service.listResourceReports(2);
+
+      expect(page.items).toHaveLength(2);
+      expect(page.nextCursor).toBe(encodeCursor('res_b:user_2'));
+    });
+
+    it('cursors on the composite key, since one person reports many resources', async () => {
+      await service.listResourceReports(
+        undefined,
+        encodeCursor('res_1:user_2'),
+      );
+
+      expect(prisma.resourceReport.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cursor: {
+            reporterId_resourceId: {
+              reporterId: 'user_2',
+              resourceId: 'res_1',
+            },
+          },
+          skip: 1,
+        }),
+      );
+    });
+
+    it('rejects a cursor that is not a target:reporter pair', async () => {
+      await expect(
+        service.listResourceReports(undefined, encodeCursor('res_1')),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('400s a cursor naming a row that is gone, since a report can be deleted', async () => {
+      prisma.resourceReport.findMany.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('gone', {
+          code: 'P2025',
+          clientVersion: '7.0.0',
+        }),
+      );
+
+      await expect(
+        service.listResourceReports(undefined, encodeCursor('res_gone:user_2')),
+      ).rejects.toBeInstanceOf(BadRequestException);
     });
   });
 });

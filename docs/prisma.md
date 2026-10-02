@@ -408,6 +408,38 @@ Deliberately **not** a like/dislike pair, and deliberately **not** a reply tree.
 [comments.md](./comments.md) for the reasoning and for the routes built on top of
 this table.
 
+### Resource reports
+
+`ResourceReport(reporterId, resourceId, reason, createdAt)` is a flag on a resource.
+Migrations `20261002115234_add_resource_reports` and
+`20261002120417_reorder_resource_report_key`.
+
+**Two report tables, not one polymorphic `Report`.** That was the first design and it
+cannot work, which is worth recording because the reason is not obvious:
+
+- Postgres makes `PRIMARY KEY` columns implicitly `NOT NULL`, so a nullable target
+  cannot appear in a composite key.
+- A plain `@@unique([reporterId, resourceId])` does not help for a comment row, because
+  Postgres treats NULLs as _distinct_ in a unique index rather than as conflicting —
+  the same fact that makes `@@unique([contributorId, url])` on `Resource` permissive
+  where it needs to be.
+
+So the unified table would have had to enforce idempotency in application code, with a
+read-then-write that loses the race a primary key does not — and refusing the duplicate
+is the entire point of keying a report on `(target, reporter)`.
+
+Both keys are actor-first, `(reporterId, targetId)`, matching each other and
+`SavedResource`. The queue ordering is
+`createdAt DESC, reporterId DESC, resourceId DESC`; all three columns are load-bearing,
+because `createdAt` is not unique and neither is `reporterId` alone.
+
+`@@index([resourceId])` backs the queue's report count.
+
+Both foreign keys cascade, for the reasons spelled out on `CommentReport`.
+
+Deliberately **not** added to the public `resourceInclude`, so no report count can leak
+onto a resource response. The queue has its own include in `resources/report-read.ts`.
+
 ### Comment reports
 
 `CommentReport(reporterId, commentId, reason, createdAt)` is a flag on a comment, and

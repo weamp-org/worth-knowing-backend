@@ -34,6 +34,7 @@ describe('Resources (e2e)', () => {
       update: jest.Mock;
       delete: jest.Mock;
     };
+    resourceReport: { createMany: jest.Mock; findMany: jest.Mock };
   };
   let currentUserRole: UserRole;
 
@@ -44,6 +45,21 @@ describe('Resources (e2e)', () => {
     accessType: AccessType.PAID,
     why: 'The clearest explanation of human institutions I have read.',
   };
+
+  /** A page of the resource report queue. */
+  interface ReportsBody {
+    items: Array<{
+      id: string;
+      reportCount: number;
+      resource: {
+        title: string;
+        why: string;
+        contributor: unknown;
+        contributorId: string | null;
+        isAnonymous: boolean;
+      };
+    }>;
+  }
 
   const asUser = (userId: string) => ({
     post: (url: string) =>
@@ -87,6 +103,27 @@ describe('Resources (e2e)', () => {
               Promise.resolve({ id: 'res_1', ...data, contributor: null }),
             ),
           delete: jest.fn().mockResolvedValue({ id: 'res_1' }),
+        },
+        resourceReport: {
+          createMany: jest.fn().mockResolvedValue({ count: 1 }),
+          findMany: jest.fn().mockResolvedValue([
+            {
+              reporterId: 'clerk_456',
+              resourceId: 'res_1',
+              reason: 'This link just installed something.',
+              createdAt: new Date('2026-03-01T00:00:00.000Z'),
+              resource: {
+                id: 'res_1',
+                ...validBody,
+                contributor: null,
+                isAnonymous: false,
+                createdAt: new Date('2026-01-01T00:00:00.000Z'),
+                updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+                tags: [],
+                _count: { savedResources: 0, comments: 0, reports: 4 },
+              },
+            },
+          ]),
         },
       })
       .compile();
@@ -831,6 +868,165 @@ describe('Resources (e2e)', () => {
         .expect(400);
 
       expect(prisma.resource.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /resources/:id/report', () => {
+    const report = (id = 'res_1') => `/api/v1/resources/${id}/report`;
+
+    beforeEach(() => {
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        contributorId: 'clerk_123',
+      });
+    });
+
+    it('requires a session', async () => {
+      await request(app.getHttpServer()).post(report()).expect(401);
+    });
+
+    it('files the report and answers 204 with no body', async () => {
+      const response = await asUser('clerk_456')
+        .post(report())
+        .send({ reason: 'This link just installed something.' })
+        .expect(204);
+
+      expect(response.text).toBe('');
+      expect(prisma.resourceReport.createMany).toHaveBeenCalledWith({
+        data: {
+          reporterId: 'clerk_456',
+          resourceId: 'res_1',
+          reason: 'This link just installed something.',
+        },
+        skipDuplicates: true,
+      });
+    });
+
+    it('does not change the resource, so a report is invisible to readers', async () => {
+      await asUser('clerk_456').post(report()).send({}).expect(204);
+
+      expect(prisma.resource.update).not.toHaveBeenCalled();
+      expect(prisma.resource.delete).not.toHaveBeenCalled();
+    });
+
+    it('refuses a report on your own contribution', async () => {
+      await asUser('clerk_123').post(report()).send({}).expect(400);
+
+      expect(prisma.resourceReport.createMany).not.toHaveBeenCalled();
+    });
+
+    it('404s for a resource that is not there', async () => {
+      prisma.resource.findUnique.mockResolvedValue(null);
+
+      await asUser('clerk_456').post(report()).send({}).expect(404);
+    });
+
+    it('accepts a report with no reason at all', async () => {
+      await asUser('clerk_456').post(report()).send({}).expect(204);
+
+      expect(prisma.resourceReport.createMany).toHaveBeenCalledWith({
+        data: { reporterId: 'clerk_456', resourceId: 'res_1' },
+        skipDuplicates: true,
+      });
+    });
+
+    it('rejects a reason over the column limit', async () => {
+      await asUser('clerk_456')
+        .post(report())
+        .send({ reason: 'x'.repeat(501) })
+        .expect(400);
+    });
+
+    it('rejects an unknown field, since the pipe forbids extras', async () => {
+      await asUser('clerk_456')
+        .post(report())
+        .send({ reason: 'Spam.', remove: true })
+        .expect(400);
+    });
+  });
+
+  describe('GET /resource-reports', () => {
+    const queue = '/api/v1/resource-reports';
+
+    it('refuses a signed-out reader', async () => {
+      await request(app.getHttpServer()).get(queue).expect(401);
+    });
+
+    it('refuses a signed-in non-admin', async () => {
+      await asUser('clerk_123').get(queue).expect(403);
+    });
+
+    it('serves an admin, newest report first', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      await asUser('clerk_123').get(queue).expect(200);
+
+      expect(prisma.resourceReport.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderBy: [
+            { createdAt: 'desc' },
+            { reporterId: 'desc' },
+            { resourceId: 'desc' },
+          ],
+        }),
+      );
+    });
+
+    it('never names the reporter', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      const response = await asUser('clerk_123').get(queue).expect(200);
+
+      const row = (response.body as ReportsBody).items[0];
+      expect(row).not.toHaveProperty('reporterId');
+      expect(row).not.toHaveProperty('reporter');
+      expect(row.id).toBe('res_1:clerk_456');
+    });
+
+    it('carries the resource so a moderator can judge it without opening anything', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      const response = await asUser('clerk_123').get(queue).expect(200);
+
+      const row = (response.body as ReportsBody).items[0];
+      expect(row.resource.title).toBe('Sapiens');
+      expect(row.resource.why).toContain('clearest explanation');
+      expect(row.reportCount).toBe(4);
+    });
+
+    it('still redacts an anonymously shared contribution', async () => {
+      currentUserRole = UserRole.ADMIN;
+      prisma.resourceReport.findMany.mockResolvedValue([
+        {
+          reporterId: 'clerk_456',
+          resourceId: 'res_1',
+          reason: null,
+          createdAt: new Date('2026-03-01T00:00:00.000Z'),
+          resource: {
+            id: 'res_1',
+            ...validBody,
+            contributor: { id: 'clerk_789', name: 'Ada' },
+            contributorId: 'clerk_789',
+            isAnonymous: true,
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+            updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+            tags: [],
+            _count: { savedResources: 0, comments: 0, reports: 1 },
+          },
+        },
+      ]);
+
+      const response = await asUser('clerk_123').get(queue).expect(200);
+
+      const row = (response.body as ReportsBody).items[0];
+      expect(row.resource.contributor).toBeNull();
+      expect(row.resource.isAnonymous).toBe(true);
+    });
+
+    it('rejects an unknown query parameter', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      await asUser('clerk_123').get(`${queue}?order=oldest`).expect(400);
     });
   });
 

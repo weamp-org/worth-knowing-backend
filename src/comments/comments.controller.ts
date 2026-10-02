@@ -37,20 +37,7 @@ import { ClerkAuthGuard } from '../clerk-auth/clerk-auth.guard';
 import { CurrentUserId } from '../clerk-auth/current-user.decorator';
 import { RolesGuard } from '../roles/roles.guard';
 import { Public } from '../public/public.decorator';
-
-/**
- * How fast one person may post comments, per hour.
- *
- * Overridden on the create route alone. The global limit is 100 requests a minute,
- * which is the right shape for reads and far too generous for the one write on this
- * site that produces public free text: a hundred comments a minute from one account
- * is a spam cannon, and no amount of after-the-fact reporting un-sends it.
- *
- * Generous for an ordinary person — an hour of solid conversation is not a hundred
- * comments — and tight enough that bulk posting needs more accounts than a bored
- * person has.
- */
-const COMMENT_WRITE_THROTTLE = { default: { limit: 10, ttl: 3_600_000 } };
+import { PUBLIC_WRITE_THROTTLE } from '../throttle';
 
 /**
  * Nested under the resource rather than mounted at `/comments`.
@@ -105,7 +92,7 @@ export class CommentsController {
    * contribution does not un-withhold the contributor.
    */
   @Post()
-  @Throttle(COMMENT_WRITE_THROTTLE)
+  @Throttle(PUBLIC_WRITE_THROTTLE)
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Comment on a resource, or reply to one comment',
@@ -177,7 +164,7 @@ export class CommentsController {
    */
   @Post(':id/report')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @Throttle(COMMENT_WRITE_THROTTLE)
+  @Throttle(PUBLIC_WRITE_THROTTLE)
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Report a comment to the moderators',

@@ -106,6 +106,7 @@ model User {
   savedResources SavedResource[]
   comments Comment[]
   commentReports CommentReport[]
+  resourceReports ResourceReport[]
 }
 
 /// Every username that must not be claimable, whether or not anyone holds it.
@@ -167,6 +168,7 @@ model Resource {
   collectionResources CollectionResource[]
   savedResources SavedResource[]
   comments Comment[]
+  reports ResourceReport[]
 }
 
 /// A gathering of resources somebody chose to keep together.
@@ -422,4 +424,60 @@ model CommentReport {
   // non-total order skips or repeats rows — and both trailing columns are needed for
   // a *total* order, since `reporterId` alone repeats across a person's own reports.
   @@index([createdAt(sort: Desc), reporterId(sort: Desc), commentId(sort: Desc)])
+}
+
+/// Why somebody flagged a resource.
+///
+/// Deliberately a second table rather than one polymorphic `Report` with a nullable
+/// `resourceId` *or* `commentId`, which was the first design and is worth recording
+/// because the reason is not obvious.
+///
+/// The nullable version cannot work. Postgres makes `PRIMARY KEY` columns implicitly
+/// `NOT NULL`, so a target cannot be nullable in a composite key; and a plain
+/// `@@unique([reporterId, resourceId])` does nothing for a comment report, because
+/// Postgres treats NULLs as *distinct* in a unique index rather than as conflicting
+/// (the same fact that makes `@@unique([contributorId, url])` above permissive where
+/// it needs to be). So the unified table would have had to enforce idempotency in
+/// application code — a read-then-write, which loses the race the way a primary key
+/// does not — and the whole point of keying reports on `(target, reporter)` is that
+/// the database refuses the duplicate.
+///
+/// Two tables cost a near-duplicated model and two near-duplicated service methods.
+/// In exchange the cascade and the idempotency both stay enforced by the database,
+/// which is how every other invariant in this schema works.
+model ResourceReport {
+  reporterId String
+  resourceId String
+  createdAt  DateTime @default(now())
+
+  /// Optional, and capped short, for the same reasons as `CommentReport.reason`: a
+  /// required reason is a dropdown somebody has to pick from before they can flag
+  /// something they plainly know is wrong, and a report is a complaint rather than a
+  /// second contribution.
+  reason String? @db.VarChar(500)
+
+  /// Cascading. A report exists only to point at a resource, and a resource deletion
+  /// is a hard delete for everyone — so the reports go with it rather than piling up
+  /// in a queue as rows nobody can act on.
+  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+  /// Cascading, because the row is the reporter's own note rather than shared state.
+  reporter User @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+
+  /// The same person cannot report the same resource twice, which is what makes
+  /// reporting idempotent and stops one account from padding a resource's report
+  /// count to make it look worse than it is.
+  ///
+  /// Actor-first, matching `CommentReport` and `SavedResource`. Both orders exist in
+  /// this schema (`CollectionResource` is target-first), so the point is that the two
+  /// report tables agree with each other.
+  @@id([reporterId, resourceId])
+
+  // Serves "how many people flagged this resource", which the admin queue groups by.
+  @@index([resourceId])
+
+  // Serves the queue, `ORDER BY created_at DESC, reporter_id DESC,
+  // resource_id DESC`. Both trailing columns are load-bearing for the same reason as
+  // in `CommentReport`: `createdAt` is not unique and neither is `reporterId` alone.
+  @@index([createdAt(sort: Desc), reporterId(sort: Desc), resourceId(sort: Desc)])
 }

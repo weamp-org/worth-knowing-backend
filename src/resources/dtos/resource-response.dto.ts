@@ -125,3 +125,51 @@ export class PaginatedResourcesResponseDto {
    */
   nextCursor: string | null;
 }
+
+/**
+ * One row of the resource report queue: a single report, with the resource it points
+ * at.
+ *
+ * The same shape and the same reasoning as `CommentReportDto` — one row per report
+ * rather than per reported resource, because grouping means ordering by an aggregate
+ * that changes while somebody is paging. See that DTO for the full argument.
+ *
+ * The resource arrives through the ordinary {@link ResourceResponseDto}, which means
+ * an **anonymously shared contribution is still redacted here**. That is deliberate:
+ * `isAnonymous` is a promise the contributor made, and the person most likely to be
+ * tempted to break it is not a stranger on the feed but a moderator with a queue in
+ * front of them. They do not need the name to decide that a link is spam, and routing
+ * this through the shared read shape is what makes it impossible to forget.
+ *
+ * The reporter is **not** included, for the same reason as on a comment report.
+ */
+export class ResourceReportDto {
+  /** The composite primary key, `resourceId:reporterId`. Carries no meaning to a reader. */
+  id: string;
+
+  /**
+   * The reported resource, in its ordinary public shape.
+   *
+   * `contributor` is null here when the contribution was shared anonymously — not
+   * because it was deleted, which `isAnonymous` tells apart.
+   */
+  resource: ResourceResponseDto;
+
+  /** How many people have reported this resource, including this reporter. */
+  reportCount: number;
+
+  /** What this reporter said, or an empty string when they said nothing. */
+  reason: string;
+
+  createdAt: Date;
+}
+
+/** One page of `GET /api/v1/resource-reports`. */
+export class PaginatedResourceReportsResponseDto {
+  items: ResourceReportDto[];
+
+  /** Pass back as `?cursor=` to get the next page. `null` on the last page.
+   * @example 'Y2tpZGEyYjM0'
+   */
+  nextCursor: string | null;
+}

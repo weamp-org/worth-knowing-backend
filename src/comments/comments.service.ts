@@ -9,7 +9,9 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UserRole } from '../generated/prisma/enums';
 import {
   decodeCursor,
+  decodeReportCursor,
   encodeCursor,
+  encodeReportCursor,
   isCursorNotFound,
 } from '../pagination/cursor.util';
 import { CreateCommentDto } from './dtos/create-comment.dto';
@@ -25,40 +27,6 @@ import {
   type CommentReportWithComment,
   type CommentWithRelations,
 } from './comment-read';
-
-/**
- * Decodes a report-queue cursor into the composite primary key it encodes.
- *
- * The cursor is one base64url blob over `reporterId:commentId`, so it is decoded once
- * and split rather than being two separate cursors — which is what
- * `SavedResource`'s composite needs, and does not need here, because there the
- * reporter is in the path and this is in neither.
- *
- * Split on the *first* colon and validate both halves with {@link decodeCursor}, so a
- * hand-made cursor cannot smuggle a separator through into the second half. A colon
- * is inside `IMPLAUSIBLE_ID`'s allowlist, so `decodeCursor` would happily pass one
- * through on its own.
- */
-function decodeReportCursor(cursor: string): {
-  reporterId: string;
-  commentId: string;
-} {
-  // One decode, which also applies `decodeCursor`'s base64 and character checks.
-  const decoded = decodeCursor(cursor);
-  const separator = decoded.indexOf(':');
-
-  // Both halves must be present. Anything beyond that is not worth defending: a
-  // well-formed cursor naming a row that does not exist resolves to an empty page,
-  // and Prisma parameterises the lookup, so there is no injection surface either way.
-  if (separator <= 0 || separator === decoded.length - 1) {
-    throw new BadRequestException('Invalid cursor');
-  }
-
-  return {
-    reporterId: decoded.slice(0, separator),
-    commentId: decoded.slice(separator + 1),
-  };
-}
 
 /**
  * Remarks on a resource.
@@ -262,18 +230,24 @@ export class CommentsService {
   async listReports(limit?: number, cursor?: string) {
     const take = limit ?? DEFAULT_PAGE_SIZE;
 
+    // Decoded outside the query so the two halves can be named for what they are here.
+    // `decodeReportCursor` speaks in `targetId` because the shape is shared with the
+    // resource queue; this one points at a comment.
+    const position = cursor ? decodeReportCursor(cursor) : null;
+
     let rows: CommentReportWithComment[];
 
     try {
       rows = await this.prisma.commentReport.findMany({
         orderBy: commentReportOrderBy,
         take: take + 1,
-        ...(cursor
+        ...(position
           ? {
-              // The composite primary key. `reporterId` is not unique alone — one
-              // person reports many comments — so the cursor carries both halves.
               cursor: {
-                reporterId_commentId: decodeReportCursor(cursor),
+                reporterId_commentId: {
+                  reporterId: position.reporterId,
+                  commentId: position.targetId,
+                },
               },
               skip: 1,
             }
@@ -295,7 +269,7 @@ export class CommentsService {
       items: items.map((row) => toCommentReportResponse(row)),
       nextCursor:
         hasMore && last
-          ? encodeCursor(`${last.reporterId}:${last.commentId}`)
+          ? encodeReportCursor(last.commentId, last.reporterId)
           : null,
     };
   }

@@ -594,7 +594,8 @@ describe('CommentsService', () => {
       // A moderator needs to know a report exists and what it said, not who filed it.
       expect(page.items[0]).not.toHaveProperty('reporterId');
       expect(page.items[0]).not.toHaveProperty('reporter');
-      expect(page.items[0].id).toBe(`${OTHER}:cmt_1`);
+      // The id is the composite key, target first: `commentId:reporterId`.
+      expect(page.items[0].id).toBe(`cmt_1:${OTHER}`);
     });
 
     it('renders the reported comment through the public thread’s own shape', async () => {
@@ -644,11 +645,11 @@ describe('CommentsService', () => {
       const page = await service.listReports(2);
 
       expect(page.items).toHaveLength(2);
-      expect(page.nextCursor).toBe(encodeCursor('user_b:cmt_b'));
+      expect(page.nextCursor).toBe(encodeCursor('cmt_b:user_b'));
     });
 
     it('cursors on the composite key, since one person reports many comments', async () => {
-      await service.listReports(undefined, encodeCursor(`${OTHER}:cmt_1`));
+      await service.listReports(undefined, encodeCursor(`cmt_1:${OTHER}`));
 
       expect(prisma.commentReport.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -683,7 +684,7 @@ describe('CommentsService', () => {
       );
 
       await expect(
-        service.listReports(undefined, encodeCursor(`${OTHER}:cmt_gone`)),
+        service.listReports(undefined, encodeCursor(`cmt_gone:${OTHER}`)),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
   });
