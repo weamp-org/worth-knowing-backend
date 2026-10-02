@@ -321,11 +321,44 @@ not already null. Only rows a dismissal actually closed are reopened — a repor
 _after_ the dismissal is already `dismissedAt: null` and already queued, so this leaves
 it exactly where it is rather than disturbing a report nobody resolved.
 
-### A report filed after a dismissal comes back
+### A report filed after a dismissal comes back — from anybody
 
-Dismissal is per `(target, reporter)` row, so a _new_ report from someone else is a new
-row with `dismissedAt: null` and reappears in the queue on its own. That is right — it
-is new information rather than a re-run of a decision somebody already made.
+Dismissal is per `(target, reporter)` row, so reporting something again brings it back
+into the queue. That is right in both cases: it is new information rather than a re-run
+of a decision somebody already made.
+
+**A different reporter** needs no code — the row does not exist, the insert lands, and
+`dismissedAt` is null on it.
+
+**The same reporter again** needs it explicitly, and this was a bug. The composite
+primary key is `(reporterId, targetId)`, so `createMany({ skipDuplicates: true })`
+finds the row already there, inserts nothing, and the stale row keeps `dismissedAt`
+set. The endpoint answers `204`, the reporter sees a success toast, and the report
+never reappears.
+
+Verified against the database rather than reasoned about, which is what caught it:
+
+```
+1. reported:               queue = 1
+2. dismissed:              queue = 0
+3. SAME person re-reports: queue = 0   ← the bug
+4. DIFFERENT person reports: queue = 1
+```
+
+It survived a green `pnpm build`, 513 unit tests and 253 e2e, because the original
+version of this doc **stated it as a feature** — "a new report from a new reporter
+reappears on its own" — and that sentence was true. It was never checked against the
+repeat case, which is the case a reader actually hits.
+
+`report` therefore follows its insert with a narrow `updateMany` on
+`(target, reporterId)` where `dismissedAt` is not null. Scoped to **that reporter** on
+purpose: another person's report is a separate row with its own dismissal state, and
+reopening theirs would be overriding a colleague's decision.
+
+The update is unconditional rather than conditional on whether the insert landed —
+"did it insert?" is exactly the question `skipDuplicates` was asked not to answer, and
+the `dismissedAt: { not: null }` guard means the second write costs nothing when there is
+nothing to reopen.
 
 ## The read shape
 

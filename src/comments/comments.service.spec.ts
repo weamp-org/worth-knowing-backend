@@ -534,6 +534,37 @@ describe('CommentsService', () => {
       );
     });
 
+    it('reopens a dismissed report when the same person reports again', async () => {
+      // The bug this exists to fix: `createMany({ skipDuplicates: true })` is a
+      // no-op when the row already exists, so without the reopen the repeat is
+      // silently dropped — the endpoint answers 204 and the row keeps
+      // `dismissedAt` set, so it never reappears in the queue. Reporting something
+      // again is new information: it is still there.
+      await service.report(RESOURCE, 'cmt_1', USER, reason);
+
+      expect(prisma.commentReport.updateMany).toHaveBeenCalledWith({
+        where: {
+          commentId: 'cmt_1',
+          reporterId: USER,
+          dismissedAt: { not: null },
+        },
+        data: { dismissedAt: null },
+      });
+    });
+
+    it('reopens only that reporter’s row, not the whole comment', async () => {
+      // Scoping to the reporter is the point. Another person's report is a separate
+      // row with its own dismissal state, and reopening theirs would be overriding a
+      // colleague's decision.
+      await service.report(RESOURCE, 'cmt_1', USER, reason);
+
+      expect(prisma.commentReport.updateMany).toHaveBeenCalledWith(
+        dataContaining({
+          where: dataContaining({ reporterId: USER }),
+        }),
+      );
+    });
+
     it('refuses a report on your own comment', async () => {
       prisma.comment.findUnique.mockResolvedValue({
         id: 'cmt_1',

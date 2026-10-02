@@ -213,6 +213,18 @@ export class CommentsService {
       },
       skipDuplicates: true,
     });
+
+    // A repeat report from the same person after a dismissal. The insert above is a
+    // no-op in that case — the row exists and the composite primary key stops a second
+    // one — so without this the reporter is silently ignored while the endpoint
+    // answers 204. Reporting something again is new information: the thing they
+    // flagged is still there.
+    //
+    // The update is unconditional rather than conditional on whether the insert
+    // landed, because "did it insert?" is exactly the question `skipDuplicates` was
+    // asked not to answer, and a `dismissedAt: { not: null }` guard means the second
+    // write costs nothing when there was nothing to reopen.
+    await this.reopenDismissedForReporter(commentId, reporterId);
   }
 
   /**
@@ -308,6 +320,34 @@ export class CommentsService {
    * Takes no actor id: `dismissedAt` deliberately records *when* and not *who*, so
    * there is nothing here to do with the session. See `CommentReport.dismissedAt`.
    */
+  /**
+   * Reopens a dismissed comment's reports **for one reporter**, because that person
+   * reported it again.
+   *
+   * This exists because dismissal is per `(target, reporter)` row, and the composite
+   * primary key makes a repeat report from the *same* person a silent no-op: the row
+   * already exists, `createMany({ skipDuplicates: true })` inserts nothing, and the
+   * stale row keeps `dismissedAt` set. The result is that a reader who reports
+   * something, sees a moderator keep it, and reports it again is **silently ignored** —
+   * the endpoint answers `204` and the row never reappears in the queue.
+   *
+   * That was in the first version as a stated feature, and it was wrong. It was
+   * reasoned about from the *new reporter* case and never checked against the repeat
+   * one, and the asymmetry is invisible unless you go looking: a different person
+   * reporting after a dismissal creates a new row and works fine.
+   *
+   * Called from {@link report}, which is the only place a repeat report can arrive.
+   */
+  private async reopenDismissedForReporter(
+    commentId: string,
+    reporterId: string,
+  ): Promise<void> {
+    await this.prisma.commentReport.updateMany({
+      where: { commentId, reporterId, dismissedAt: { not: null } },
+      data: { dismissedAt: null },
+    });
+  }
+
   async dismiss(commentId: string): Promise<void> {
     await this.prisma.commentReport.updateMany({
       where: { commentId, dismissedAt: null },

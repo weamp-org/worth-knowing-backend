@@ -456,9 +456,13 @@ model CommentReport {
   /// this product does not make.
   ///
   /// Null on every row either queue returns: both list routes filter on it, so a
-  /// dismissed report is invisible rather than shown-and-greyed. A report filed
-  /// *after* a dismissal is a new row from a new reporter and reappears on its own,
-  /// which is right — it is new information.
+  /// dismissed report is invisible rather than shown-and-greyed.
+  ///
+  /// Per `(target, reporter)` row, and reporting something again reopens it — for
+  /// **anybody**, which for the same reporter takes an explicit `updateMany` after the
+  /// insert. That is not redundant: the composite primary key makes `skipDuplicates` a
+  /// silent no-op for a repeat, so without it a reader who reports, sees a moderator
+  /// keep it, and reports it again is told it worked and is quietly ignored.
   dismissedAt DateTime?
 
   /// Optional, and capped short. **The category is required and this is not**, and

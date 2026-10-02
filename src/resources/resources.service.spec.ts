@@ -1154,6 +1154,40 @@ describe('ResourcesService', () => {
       );
     });
 
+    it('reopens a dismissed report when the same person reports again', async () => {
+      // The bug this exists to fix: `createMany({ skipDuplicates: true })` is a
+      // no-op when the row already exists, so without the reopen the repeat is
+      // silently dropped — the endpoint answers 204 and the row keeps `dismissedAt`
+      // set. Reporting it again is new information: the link is still there.
+      await service.report(REPORTED, REPORTER, {
+        reason: ResourceReportReason.BROKEN_LINK,
+      });
+
+      expect(prisma.resourceReport.updateMany).toHaveBeenCalledWith({
+        where: {
+          resourceId: REPORTED,
+          reporterId: REPORTER,
+          dismissedAt: { not: null },
+        },
+        data: { dismissedAt: null },
+      });
+    });
+
+    it('reopens only that reporter’s row, not the whole contribution', async () => {
+      // Scoping to the reporter is the point: another person's report is a separate
+      // row with its own dismissal state, and reopening theirs would be overriding a
+      // colleague's decision.
+      await service.report(REPORTED, REPORTER, {
+        reason: ResourceReportReason.BROKEN_LINK,
+      });
+
+      expect(prisma.resourceReport.updateMany).toHaveBeenCalledWith(
+        dataContaining({
+          where: dataContaining({ reporterId: REPORTER }),
+        }),
+      );
+    });
+
     it('refuses a report on your own contribution', async () => {
       await expect(
         service.report(REPORTED, CONTRIBUTOR, {

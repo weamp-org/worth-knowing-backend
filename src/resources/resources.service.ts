@@ -111,6 +111,36 @@ export class ResourcesService {
       },
       skipDuplicates: true,
     });
+
+    // A repeat report from the same person after a dismissal. The insert above is a
+    // no-op in that case — the row exists and the composite primary key stops a second
+    // one — so without this the reporter is silently ignored while the endpoint still
+    // answers 204. Reporting something again is new information: the link they
+    // flagged is still there.
+    await this.reopenDismissedForReporter(resourceId, reporterId);
+  }
+
+  /**
+   * Reopens a dismissed contribution's reports **for one reporter**, because that
+   * person reported it again.
+   *
+   * See {@link CommentsService.reopenDismissedForReporter} — the same shape, and the
+   * same bug it fixes. Dismissal is per `(target, reporter)` row, so a repeat report
+   * from the *same* person hits the composite primary key, `skipDuplicates` inserts
+   * nothing, and the stale row keeps `dismissedAt` set. Without this, a reader who
+   * reports something, sees a moderator keep it, and reports it again gets a `204`
+   * and no queue entry.
+   *
+   * Called only from {@link report}, which is the sole place a repeat can arrive.
+   */
+  private async reopenDismissedForReporter(
+    resourceId: string,
+    reporterId: string,
+  ): Promise<void> {
+    await this.prisma.resourceReport.updateMany({
+      where: { resourceId, reporterId, dismissedAt: { not: null } },
+      data: { dismissedAt: null },
+    });
   }
 
   /**
