@@ -548,8 +548,23 @@ describe('CommentsService', () => {
           reporterId: USER,
           dismissedAt: { not: null },
         },
-        data: { dismissedAt: null },
+        data: dataContaining({ dismissedAt: null }),
       });
+    });
+
+    it('re-stamps the date on a reopened report, so it surfaces at the top', async () => {
+      // `createdAt` is load-bearing on the reopen. The queue orders by `createdAt DESC`,
+      // so clearing `dismissedAt` alone would put a report that arrived right now at
+      // the bottom of the queue, under everything filed since — the original bug in a
+      // quieter form: reported, and never seen.
+      await service.report(RESOURCE, 'cmt_1', USER, reason);
+
+      const [args] = jest.mocked(prisma.commentReport.updateMany).mock
+        .calls[0] as unknown as [
+        { data: { dismissedAt: Date | null; createdAt: Date } },
+      ];
+      expect(args.data.dismissedAt).toBeNull();
+      expect(args.data.createdAt).toBeInstanceOf(Date);
     });
 
     it('reopens only that reporter’s row, not the whole comment', async () => {

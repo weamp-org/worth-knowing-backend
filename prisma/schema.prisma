@@ -463,6 +463,12 @@ model CommentReport {
   /// insert. That is not redundant: the composite primary key makes `skipDuplicates` a
   /// silent no-op for a repeat, so without it a reader who reports, sees a moderator
   /// keep it, and reports it again is told it worked and is quietly ignored.
+  ///
+  /// That reopen also re-stamps `createdAt`, and that half is load-bearing: both queues
+  /// order by `createdAt DESC`, so reopening without re-stamping puts the fresh report
+  /// at the *bottom* of the queue under everything filed since — reported, and never
+  /// seen. Both queues therefore order by when somebody **last** said it was worth a
+  /// look, not by when it first was.
   dismissedAt DateTime?
 
   /// Optional, and capped short. **The category is required and this is not**, and

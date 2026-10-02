@@ -360,6 +360,28 @@ The update is unconditional rather than conditional on whether the insert landed
 the `dismissedAt: { not: null }` guard means the second write costs nothing when there is
 nothing to reopen.
 
+### The reopen re-stamps the date, and that is the load-bearing part
+
+`data` sets `createdAt` as well as `dismissedAt`, and the queue orders by
+`createdAt DESC`. Reopening a row while leaving its original date therefore puts a
+report that arrived _right now_ at the **bottom** of the queue, under everything filed
+since — which is the same bug in a quieter form. Reported, and never seen.
+
+Verified against the database, which is the only reason this was caught:
+
+```
+originally filed:    2026-01-01
+dismissed.  queue = 0
+re-reported today:   2026-01-01   ← before: sorted as January, bottom of the queue
+re-reported today:   2026-10-02   ← after: sorted as today, top of the queue
+back in the queue?  true
+```
+
+That trades away the first-report date deliberately. Both queues order by _when somebody
+last said this was worth a look_, not by when it first was, and the original date is the
+one nobody working a queue needs. The queue row's `reported {date}` label stays accurate
+either way, because it reads from the same `createdAt`.
+
 ## The read shape
 
 `comment-read.ts` holds it, extracted for the same reason `resources/resource-read.ts`

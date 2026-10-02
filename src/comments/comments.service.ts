@@ -337,6 +337,16 @@ export class CommentsService {
    * reporting after a dismissal creates a new row and works fine.
    *
    * Called from {@link report}, which is the only place a repeat report can arrive.
+   *
+   * **`createdAt` is refreshed as well as `dismissedAt`, and that is load-bearing.**
+   * The queue orders by `createdAt DESC`, so reopening a row while leaving its
+   * original date puts a report that arrived *right now* at the bottom of the queue,
+   * under everything filed since. A moderator working top-down would never reach it,
+   * which is the original bug in a quieter form — reported, and never seen.
+   *
+   * That trades away the first-report date, deliberately. Both queues order by *when
+   * somebody last said this was worth a look*, not by when it first was, and the
+   * original date is the one nobody acting on a queue needs.
    */
   private async reopenDismissedForReporter(
     commentId: string,
@@ -344,7 +354,7 @@ export class CommentsService {
   ): Promise<void> {
     await this.prisma.commentReport.updateMany({
       where: { commentId, reporterId, dismissedAt: { not: null } },
-      data: { dismissedAt: null },
+      data: { dismissedAt: null, createdAt: new Date() },
     });
   }
 

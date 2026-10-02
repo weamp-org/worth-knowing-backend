@@ -1169,8 +1169,25 @@ describe('ResourcesService', () => {
           reporterId: REPORTER,
           dismissedAt: { not: null },
         },
-        data: { dismissedAt: null },
+        data: dataContaining({ dismissedAt: null }),
       });
+    });
+
+    it('re-stamps the date on a reopened report, so it surfaces at the top', async () => {
+      // `createdAt` is load-bearing on the reopen. The queue orders by `createdAt DESC`,
+      // so clearing `dismissedAt` alone would put a link flagged right now at the
+      // bottom of the queue, under everything flagged since — the original bug in a
+      // quieter form: reported, and never seen.
+      await service.report(REPORTED, REPORTER, {
+        reason: ResourceReportReason.BROKEN_LINK,
+      });
+
+      const [args] = jest.mocked(prisma.resourceReport.updateMany).mock
+        .calls[0] as unknown as [
+        { data: { dismissedAt: Date | null; createdAt: Date } },
+      ];
+      expect(args.data.dismissedAt).toBeNull();
+      expect(args.data.createdAt).toBeInstanceOf(Date);
     });
 
     it('reopens only that reporter’s row, not the whole contribution', async () => {

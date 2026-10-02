@@ -132,6 +132,14 @@ export class ResourcesService {
    * and no queue entry.
    *
    * Called only from {@link report}, which is the sole place a repeat can arrive.
+   *
+   * `createdAt` is refreshed as well as `dismissedAt`, and that is load-bearing. The
+   * queue orders by `createdAt DESC`, so reopening a row while leaving its original
+   * date puts a link that was flagged *right now* at the bottom of the queue, under
+   * everything flagged since — reported, and never seen. See
+   * {@link CommentsService.reopenDismissedForReporter} for the same point on the
+   * comment queue; both order by when somebody last said it was worth a look, not by
+   * when it first was.
    */
   private async reopenDismissedForReporter(
     resourceId: string,
@@ -139,7 +147,7 @@ export class ResourcesService {
   ): Promise<void> {
     await this.prisma.resourceReport.updateMany({
       where: { resourceId, reporterId, dismissedAt: { not: null } },
-      data: { dismissedAt: null },
+      data: { dismissedAt: null, createdAt: new Date() },
     });
   }
 
