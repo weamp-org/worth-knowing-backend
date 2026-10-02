@@ -82,6 +82,25 @@ would shadow them.
 `UsersService`, not a list of fields stripped from a full row — so a column added
 to the `User` model cannot leak through by accident; the query has to name it.
 
+**On the public read, at least.** `GET /users/me/profile` returns your **own `role`**
+as well, which is the single exception to the list above. It is not a disclosure —
+your role, to you — and there are now two callers that need it:
+
+- The site header offers a moderation link **only** to admins. Without the role there
+  was no way to do that, so the page was reachable only by typing the URL, or by
+  showing a link to every signed-in reader that most of them cannot use.
+- `/moderation` has to tell "sign in" apart from "not allowed" before it renders
+  either. Previously it called the queue, caught a `403`, and swapped the result for
+  an error — which meant it could not distinguish the two, and a signed-out visitor
+  got an uncaught `401` and the error boundary instead of a redirect.
+
+`findMyProfile` gets this by spreading the public `select` and adding `role`, rather
+than by putting `role` into `profileSelect` — which would publish it on every profile
+on the site. The public read is unchanged and still withholds it.
+
+`USER` is reported explicitly rather than omitted, so a client branching on
+`role === ADMIN` never has to tell an absent field apart from a real answer.
+
 This reverses the deliberate removal of `UserResponseDto`, which existed to hand
 every signed-in caller a list of everyone's email addresses. The reasoning is
 recorded in `dtos/profile-response.dto.ts`; the short version is that a public

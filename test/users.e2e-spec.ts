@@ -25,6 +25,8 @@ const profileRow = (over: Record<string, unknown> = {}) => ({
   bio: 'Compiler notes.',
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
   isProfilePrivate: false,
+  // Selected only by `findMyProfile`; the public read omits it entirely.
+  role: UserRole.USER,
   ...over,
 });
 
@@ -233,6 +235,32 @@ describe('Users (e2e)', () => {
       expect((response.body as { usernameLower: string }).usernameLower).toBe(
         'adal',
       );
+    });
+
+    it('returns the caller’s own role', async () => {
+      prisma.user.findUniqueOrThrow.mockResolvedValue(
+        profileRow({ role: UserRole.ADMIN }),
+      );
+
+      const response = await asUser('user_1')
+        .get('/api/v1/users/me/profile')
+        .expect(200);
+
+      // Your own role, to you. The header needs it to decide whether to offer a
+      // moderation link, and `/moderation` needs it to tell "sign in" apart from
+      // "not allowed" — neither was reachable while the only way to learn a role
+      // was to ask a route that refuses you.
+      expect((response.body as { role: string }).role).toBe('ADMIN');
+    });
+
+    it('reports USER rather than omitting the field for an ordinary account', async () => {
+      const response = await asUser('user_1')
+        .get('/api/v1/users/me/profile')
+        .expect(200);
+
+      // A client branching on `role === ADMIN` must not have to tell an absent field
+      // apart from a real answer.
+      expect((response.body as { role: string }).role).toBe('USER');
     });
   });
 

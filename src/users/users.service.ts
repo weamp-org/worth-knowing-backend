@@ -154,18 +154,38 @@ export class UsersService {
   /**
    * A profile as its owner sees it.
    *
-   * Same shape as the public read, and deliberately: a private profile has to
-   * render on its owner's screen without the page needing to know it is private,
-   * which rules out a redacted variant. `resourcesCount` is included, so the
+   * Same shape as the public read **plus `role`**, and the `plus role` is
+   * load-bearing.
+   *
+   * A private profile has to render on its owner's screen without the page needing
+   * to know it is private, which rules out a redacted variant — so the own-profile
+   * read cannot be a subset of the public one. `resourcesCount` is included so the
    * profile page needs one request rather than two.
+   *
+   * `role` is here and nowhere else. `ProfileResponseDto` withholds it — the whole
+   * point of that fixed allowlist is that an identity field cannot leak by being
+   * added to the model later — and that objection stands fully against the *public*
+   * read: whether somebody is an admin is nobody else's business on their profile.
+   *
+   * It is not a leak here. This is your own role, returned to you, and there are now
+   * two callers that need it: the header offers a moderation link only to admins,
+   * and `/moderation` has to tell "sign in" apart from "not allowed" before it
+   * renders either. Neither was possible while the only way to learn a role was to
+   * ask a route that refuses you.
+   *
+   * Selected by spreading the public select rather than by adding `role` to
+   * `profileSelect`, which would publish it on every profile on the site.
    */
   async findMyProfile(id: string) {
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id },
-      select: profileSelect,
+      select: { ...profileSelect, role: true },
     });
 
-    return this.withResourceCount(user, id);
+    return {
+      ...(await this.withResourceCount(user, id)),
+      role: user.role,
+    };
   }
 
   /**

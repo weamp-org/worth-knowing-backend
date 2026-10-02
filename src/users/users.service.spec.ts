@@ -3,6 +3,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { Prisma } from '../generated/prisma/client';
 import { UsersService } from './users.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { UserRole } from '../generated/prisma/enums';
 
 /** A profile row as `profileSelect` returns it, including the id. */
 function profileRow(overrides: Record<string, unknown> = {}) {
@@ -15,6 +16,9 @@ function profileRow(overrides: Record<string, unknown> = {}) {
     bio: null,
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     isProfilePrivate: false,
+    // Selected only by `findMyProfile`. The public read omits it, and
+    // `findMyProfile`'s own test asserts the difference.
+    role: UserRole.USER,
     ...overrides,
   };
 }
@@ -149,7 +153,7 @@ describe('UsersService', () => {
   });
 
   describe('findMyProfile', () => {
-    it('selects only public profile fields, never the email or the role', async () => {
+    it('selects the public profile fields plus your own role, never the email', async () => {
       prisma.user.findUniqueOrThrow.mockResolvedValue(profileRow());
 
       await service.findMyProfile('clerk_123');
@@ -159,8 +163,32 @@ describe('UsersService', () => {
       ];
 
       expect(arg.select).not.toHaveProperty('email');
-      expect(arg.select).not.toHaveProperty('role');
       expect(arg.select).not.toHaveProperty('anonymousByDefault');
+
+      // Your own role is the one exception to the allowlist, and only here: the
+      // header needs it to decide whether to offer a moderation link, and
+      // `/moderation` needs it to tell "sign in" apart from "not allowed".
+      expect(arg.select).toHaveProperty('role', true);
+    });
+
+    it('returns your own role', async () => {
+      prisma.user.findUniqueOrThrow.mockResolvedValue(
+        profileRow({ role: UserRole.ADMIN }),
+      );
+
+      const result = await service.findMyProfile('clerk_123');
+
+      expect(result.role).toBe(UserRole.ADMIN);
+    });
+
+    it('reports USER by default rather than omitting the field', async () => {
+      prisma.user.findUniqueOrThrow.mockResolvedValue(profileRow());
+
+      const result = await service.findMyProfile('clerk_123');
+
+      // A client branching on `role === ADMIN` must not have to distinguish an absent
+      // field from a real answer.
+      expect(result.role).toBe(UserRole.USER);
     });
 
     it('returns the row without the Clerk user id', async () => {
