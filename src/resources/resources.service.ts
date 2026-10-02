@@ -106,7 +106,8 @@ export class ResourcesService {
       data: {
         reporterId,
         resourceId,
-        ...(dto.reason?.trim() ? { reason: dto.reason.trim() } : {}),
+        reason: dto.reason,
+        ...(dto.detail?.trim() ? { detail: dto.detail.trim() } : {}),
       },
       skipDuplicates: true,
     });

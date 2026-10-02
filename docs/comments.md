@@ -137,10 +137,47 @@ The contributor can delete their own contribution and the author can delete thei
 comment, so a self-report is never what is needed, and a queue containing one is a queue
 a moderator has to read past.
 
-**The reason is optional and free text**, capped at 500. A required reason is a
-dropdown somebody has to pick from before they can flag something they plainly know is
-wrong — a link that just installed something does not need a category, it needs
-sending. Short, because a report is a complaint rather than a second contribution.
+**The category is required; the free text is optional.** That split is the whole
+design, and it is the opposite of what it first was — an optional free-text `reason`
+and nothing else.
+
+A queue of free text has to be read one report at a time before a moderator can group
+anything, which is what makes a queue expensive to work through. With categories it
+reads as "12 spam, 3 broken links", and the shape of the volume says something on its
+own. The optional `detail` is what keeps the case that motivated the original design
+served: somebody who knows exactly what is wrong picks the nearest fit and adds a
+sentence if they want to.
+
+### The categories are organised by the decision they imply
+
+Not by severity, and not by how a reporter would describe the problem — by what a
+moderator should _do_ about it. A queue sorted by category is only worth sorting by if
+the categories separate the actions.
+
+`ResourceReportReason` — `SPAM` and `ABUSE` are remove; `BROKEN_LINK` and
+`WRONG_RESOURCE` are usually a fix; `SOMETHING_ELSE` is the escape hatch.
+
+`CommentReportReason` — `SPAM` and `ABUSE` are remove; `OFF_TOPIC` is a judgement call
+a moderator may reasonably leave; `SOMETHING_ELSE` is the escape hatch.
+
+`BROKEN_LINK` and `WRONG_RESOURCE` are **not removal cases**, and that is why the UI
+does not ask "why should this be removed?". Somebody wrote a careful `why` for a link
+that now 404s; the honest outcome is usually to fix the link or the title, and the
+product loses something real by throwing the contribution away.
+
+### There is deliberately no `DUPLICATE`
+
+The category every directory would have first, and the one this product must not.
+
+Two different people independently sharing the same link **is the feature working** —
+each brings a different `why`, and that is the value; see
+`@@unique([contributorId, url])` on `Resource`. A repeat submission by the _same_
+contributor is already refused with a 409, so a duplicate report could only ever be
+pointing at something that is meant to be there, and offering a moderator the chance
+to act against that would be worse than not having the option.
+
+`detail` is capped at 500, as the comment body was — a report is a complaint, not a
+second contribution.
 
 Both are throttled on the same 10/hour budget as posting, via `PUBLIC_WRITE_THROTTLE`
 in `src/throttle.ts`. Reporting is the same kind of act as writing, and three copies of

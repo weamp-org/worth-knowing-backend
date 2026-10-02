@@ -410,7 +410,8 @@ this table.
 
 ### Resource reports
 
-`ResourceReport(reporterId, resourceId, reason, createdAt)` is a flag on a resource.
+`ResourceReport(reporterId, resourceId, reason, detail, createdAt)` is a flag on a
+resource.
 Migrations `20261002115234_add_resource_reports` and
 `20261002120417_reorder_resource_report_key`.
 
@@ -442,7 +443,8 @@ onto a resource response. The queue has its own include in `resources/report-rea
 
 ### Comment reports
 
-`CommentReport(reporterId, commentId, reason, createdAt)` is a flag on a comment, and
+`CommentReport(reporterId, commentId, reason, detail, createdAt)` is a flag on a
+comment, and
 is what a dislike would have been. Migration `20261001090048_add_comment_reports`.
 
 The composite primary key `(reporterId, commentId)` makes reporting idempotent, so the
@@ -460,9 +462,29 @@ Both foreign keys cascade, for different reasons:
   place deleting an account removes something another person caused, and that is
   correct.
 
-`reason` is nullable and capped at 500: optional, because a required reason is a
-dropdown somebody has to pick from before they can report something they plainly know
-is wrong, and short, because a report is a complaint rather than a second comment.
+`reason` is a **required enum** and `detail` is an optional `VARCHAR(500)`.
+
+The split is the design. A required category is what makes a moderator's queue
+sortable — free text alone has to be read one report at a time before anything can be
+grouped — while the optional detail keeps the case that motivated the original
+free-text design served, where somebody who knows exactly what is wrong does not have
+to write a paragraph before they can say so.
+
+Two enums rather than one, because the sets genuinely differ: a comment has no title
+and no URL that can be wrong about, so `BROKEN_LINK` and `WRONG_RESOURCE` on a comment
+report would be categories that cannot be filled honestly.
+
+The categories are ordered by **the decision they imply for a moderator**, not by
+severity. `BROKEN_LINK` and `WRONG_RESOURCE` are usually a fix rather than a removal,
+which is why nothing in the UI frames a report as a request for one.
+
+Deliberately **no `DUPLICATE`** in `ResourceReportReason`, though it is what every
+directory would have. Two people independently sharing one link is this product
+working, and a repeat submission by the same contributor is already refused with a
+409 — so the category could only ever point at something meant to be there.
+
+The 500-character cap is kept on `detail`: a report is a complaint, not a second
+contribution.
 
 The listing index is on all three ordering columns —
 `createdAt DESC, reporterId DESC, commentId DESC`. Both trailing columns are

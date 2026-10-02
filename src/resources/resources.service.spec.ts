@@ -11,7 +11,12 @@ import { ResourcesService } from './resources.service';
 import { encodeCursor } from '../pagination/cursor.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { TagsService } from '../tags/tags.service';
-import { AccessType, ResourceType, UserRole } from '../generated/prisma/enums';
+import {
+  AccessType,
+  ResourceReportReason,
+  ResourceType,
+  UserRole,
+} from '../generated/prisma/enums';
 import { CreateResourceDto } from './dtos/create-resource.dto';
 
 const createDto = {
@@ -1074,41 +1079,71 @@ describe('ResourcesService', () => {
       });
     });
 
-    it('files the report against the resource and the session user', async () => {
+    it('files the report with its category and the session user', async () => {
       await service.report(REPORTED, REPORTER, {
-        reason: 'This link just installed something.',
+        reason: ResourceReportReason.BROKEN_LINK,
+        detail: 'It 404s now.',
       });
 
       expect(prisma.resourceReport.createMany).toHaveBeenCalledWith({
         data: {
           reporterId: REPORTER,
           resourceId: REPORTED,
-          reason: 'This link just installed something.',
+          reason: ResourceReportReason.BROKEN_LINK,
+          detail: 'It 404s now.',
+        },
+        skipDuplicates: true,
+      });
+    });
+
+    it('stores the category alone when no detail was given', async () => {
+      // The category is what sorts the queue, so it is the required half. The detail
+      // is optional precisely so a required wall of text cannot stop a report.
+      await service.report(REPORTED, REPORTER, {
+        reason: ResourceReportReason.SPAM,
+      });
+
+      expect(prisma.resourceReport.createMany).toHaveBeenCalledWith({
+        data: {
+          reporterId: REPORTER,
+          resourceId: REPORTED,
+          reason: ResourceReportReason.SPAM,
+        },
+        skipDuplicates: true,
+      });
+    });
+
+    it('trims the detail, and drops a whitespace-only one', async () => {
+      await service.report(REPORTED, REPORTER, {
+        reason: ResourceReportReason.SPAM,
+        detail: '   ',
+      });
+
+      expect(prisma.resourceReport.createMany).toHaveBeenCalledWith({
+        data: {
+          reporterId: REPORTER,
+          resourceId: REPORTED,
+          reason: ResourceReportReason.SPAM,
         },
         skipDuplicates: true,
       });
     });
 
     it('skips duplicates, so a double-click is not punished and cannot pad the count', async () => {
-      await service.report(REPORTED, REPORTER, {});
+      await service.report(REPORTED, REPORTER, {
+        reason: ResourceReportReason.SPAM,
+      });
 
       expect(prisma.resourceReport.createMany).toHaveBeenCalledWith(
         expect.objectContaining({ skipDuplicates: true }),
       );
     });
 
-    it('trims a whitespace-only reason into no reason at all', async () => {
-      await service.report(REPORTED, REPORTER, { reason: '   ' });
-
-      expect(prisma.resourceReport.createMany).toHaveBeenCalledWith({
-        data: { reporterId: REPORTER, resourceId: REPORTED },
-        skipDuplicates: true,
-      });
-    });
-
     it('refuses a report on your own contribution', async () => {
       await expect(
-        service.report(REPORTED, CONTRIBUTOR, {}),
+        service.report(REPORTED, CONTRIBUTOR, {
+          reason: ResourceReportReason.SPAM,
+        }),
       ).rejects.toBeInstanceOf(BadRequestException);
 
       expect(prisma.resourceReport.createMany).not.toHaveBeenCalled();
@@ -1118,13 +1153,17 @@ describe('ResourcesService', () => {
       prisma.resource.findUnique.mockResolvedValue(null);
 
       await expect(
-        service.report('res_missing', REPORTER, {}),
+        service.report('res_missing', REPORTER, {
+          reason: ResourceReportReason.SPAM,
+        }),
       ).rejects.toBeInstanceOf(NotFoundException);
     });
 
     it('lets anybody signed in report somebody else’s contribution', async () => {
       // No role check at all: reporting is not a privileged act, which is the point.
-      await service.report(REPORTED, REPORTER, {});
+      await service.report(REPORTED, REPORTER, {
+        reason: ResourceReportReason.SPAM,
+      });
 
       expect(prisma.resourceReport.createMany).toHaveBeenCalled();
     });
@@ -1209,12 +1248,18 @@ describe('ResourcesService', () => {
       expect(page.items[0].resource.contributorId).toBeNull();
     });
 
-    it('flattens an absent reason to an empty string', async () => {
-      prisma.resourceReport.findMany.mockResolvedValue([row({ reason: null })]);
+    it('passes the category through and flattens an absent detail', async () => {
+      // The category is required and stored; only the detail is optional, and it is
+      // flattened so a client renders the text without a fallback that reads as a bug
+      // rather than as an absent detail.
+      prisma.resourceReport.findMany.mockResolvedValue([
+        row({ reason: ResourceReportReason.BROKEN_LINK, detail: null }),
+      ]);
 
       const page = await service.listResourceReports();
 
-      expect(page.items[0].reason).toBe('');
+      expect(page.items[0].reason).toBe('BROKEN_LINK');
+      expect(page.items[0].detail).toBe('');
     });
 
     it('asks for one row over the page, so hasMore needs no COUNT(*)', async () => {

@@ -1,4 +1,8 @@
-import { AccessType, ResourceType } from '../../generated/prisma/enums';
+import {
+  AccessType,
+  ResourceReportReason,
+  ResourceType,
+} from '../../generated/prisma/enums';
 
 /** A tag as returned alongside a resource. */
 export class TagSummaryDto {
@@ -158,8 +162,25 @@ export class ResourceReportDto {
   /** How many people have reported this resource, including this reporter. */
   reportCount: number;
 
-  /** What this reporter said, or an empty string when they said nothing. */
-  reason: string;
+  /**
+   * What kind of problem this is.
+   *
+   * Required, which is what makes a queue of free text workable. **Not every value
+   * implies removal** — `BROKEN_LINK` and `WRONG_RESOURCE` are usually a fix, and a
+   * `why` written carefully for a dead link is worth keeping.
+   * @example 'BROKEN_LINK'
+   */
+  reason: ResourceReportReason;
+
+  /**
+   * The reporter's own words, or an empty string.
+   *
+   * Optional while {@link reason} is required: the category sorts the queue, and a
+   * required wall of free text would be the friction that stops somebody reporting
+   * the thing they already know is wrong.
+   * @example 'It 404s now, but the chapter structure is why I saved it.'
+   */
+  detail: string;
 
   createdAt: Date;
 }

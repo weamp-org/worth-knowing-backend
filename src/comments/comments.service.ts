@@ -208,7 +208,8 @@ export class CommentsService {
       data: {
         reporterId,
         commentId,
-        ...(dto.reason?.trim() ? { reason: dto.reason.trim() } : {}),
+        reason: dto.reason,
+        ...(dto.detail?.trim() ? { detail: dto.detail.trim() } : {}),
       },
       skipDuplicates: true,
     });

@@ -1,26 +1,37 @@
-import { IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsEnum, IsOptional, IsString, MaxLength } from 'class-validator';
+
+import { CommentReportReason } from '../../generated/prisma/enums';
+import { REPORT_DETAIL_MAX_LENGTH } from '../../resources/dtos/report-resource.dto';
 
 /**
- * Upper bound on a report's reason. Matches the column.
+ * The 500-character free-text bound, imported rather than restated.
  *
- * Kept well below a comment's own limit on purpose: a report is a complaint, and the
- * place to argue about the content is the thread it is about.
+ * The two report DTOs carry the same limit for the same reason — a report is a
+ * complaint, not a second contribution — and two copies of the number would be free
+ * to drift.
  */
-export const REPORT_REASON_MAX_LENGTH = 500;
+export { REPORT_DETAIL_MAX_LENGTH };
 
 export class ReportCommentDto {
   /**
-   * Why you think this should go, in your own words.
+   * What is wrong with it.
    *
-   * Optional. An empty queue of optional free text is still a usable queue, and a
-   * required reason is a dropdown somebody has to pick from before they can report
-   * something they plainly know is wrong.
+   * **Required**, because a queue of free text has to be read one report at a time
+   * before a moderator can group anything. `OFF_TOPIC` is a judgement call rather than
+   * a fault, and a moderator may reasonably leave it — which is why the categories are
+   * separated by the *decision* they imply, not by severity.
+   */
+  @IsEnum(CommentReportReason)
+  reason: CommentReportReason;
+
+  /**
+   * Anything a moderator should know. Optional.
    *
-   * Shown to admins only.
-   * @example 'Links to a site that just served me malware.'
+   * Shown to admins only. Not to the comment's author, and not to any reader.
+   * @example 'Not about the resource at all.'
    */
   @IsOptional()
   @IsString()
-  @MaxLength(REPORT_REASON_MAX_LENGTH)
-  reason?: string;
+  @MaxLength(REPORT_DETAIL_MAX_LENGTH)
+  detail?: string;
 }

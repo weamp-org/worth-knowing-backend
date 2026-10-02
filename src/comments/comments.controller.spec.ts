@@ -11,6 +11,7 @@ jest.mock('@clerk/express', () => ({
 
 import { CommentsController } from './comments.controller';
 import { CommentsService } from './comments.service';
+import { CommentReportReason } from '../generated/prisma/enums';
 import { IS_PUBLIC_KEY } from '../public/public.decorator';
 import { ClerkAuthGuard } from '../clerk-auth/clerk-auth.guard';
 import { RolesGuard } from '../roles/roles.guard';
@@ -165,11 +166,11 @@ describe('CommentsController', () => {
   describe('report', () => {
     it('passes the resource, the comment and the reporter through', async () => {
       await controller.report('res_1', 'cmt_1', 'user_1', {
-        reason: 'Malware.',
+        reason: CommentReportReason.SPAM,
       });
 
       expect(service.report).toHaveBeenCalledWith('res_1', 'cmt_1', 'user_1', {
-        reason: 'Malware.',
+        reason: CommentReportReason.SPAM,
       });
     });
 

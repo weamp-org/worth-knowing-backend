@@ -1,4 +1,5 @@
 import { Prisma } from '../generated/prisma/client';
+import type { ResourceReportReason } from '../generated/prisma/enums';
 
 import { resourceInclude, toResourceResponse } from './resource-read';
 import type { ResourceResponse } from './resource-read';
@@ -53,7 +54,10 @@ export type ResourceReportResponse = {
   id: string;
   resource: ResourceResponse;
   reportCount: number;
-  reason: string;
+  /** Required category — what makes the queue sortable. */
+  reason: ResourceReportReason;
+  /** Optional free text, flattened to an empty string rather than left null. */
+  detail: string;
   createdAt: Date;
 };
 
@@ -68,9 +72,10 @@ export type ResourceReportResponse = {
  * stranger on the feed but a moderator with a queue in front of them. They do not
  * need the name to decide that a link is spam.
  *
- * `reason` is flattened to an empty string rather than left null: the column is
- * nullable because not every reporter explains themselves, but a null on the response
- * would make a client render a fallback for something that reads as a bug.
+ * `detail` is flattened to an empty string rather than left null: the column is
+ * nullable because not every reporter says more than the category, but a null on the
+ * response would make a client render a fallback for something that reads as a bug.
+ * `reason` is required and passed through as-is.
  */
 export function toResourceReportResponse(
   report: ResourceReportWithResource,
@@ -79,7 +84,8 @@ export function toResourceReportResponse(
     id: `${report.resourceId}:${report.reporterId}`,
     resource: toResourceResponse(report.resource),
     reportCount: report.resource._count.reports,
-    reason: report.reason ?? '',
+    reason: report.reason,
+    detail: report.detail ?? '',
     createdAt: report.createdAt,
   };
 }

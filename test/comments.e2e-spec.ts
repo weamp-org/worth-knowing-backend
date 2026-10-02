@@ -6,7 +6,7 @@ import { getAuth } from '@clerk/express';
 import { AppModule } from './../src/app.module';
 import { PrismaService } from './../src/prisma/prisma.service';
 import { validationPipeOptions } from './../src/validation';
-import { UserRole } from './../src/generated/prisma/enums';
+import { CommentReportReason, UserRole } from './../src/generated/prisma/enums';
 
 // Same approach as `saved.e2e-spec.ts`: `getAuth` needs a request branded by
 // `clerkMiddleware()`, which only `main.ts` registers. `x-test-user-id` stands in for
@@ -151,7 +151,8 @@ describe('Comments (e2e)', () => {
             {
               reporterId: OTHER,
               commentId: 'cmt_1',
-              reason: 'Links to a site that served me malware.',
+              reason: CommentReportReason.SPAM,
+              detail: 'Go back to your own site.',
               createdAt: new Date('2026-03-01T00:00:00.000Z'),
               comment: { ...commentRow(), _count: { reports: 3 } },
             },
@@ -451,7 +452,9 @@ describe('Comments (e2e)', () => {
     const report = `${thread}/cmt_1/report`;
 
     it('requires a session, since a report has to be attributable', async () => {
-      await asAnon.post(report, { reason: 'Malware.' }).expect(401);
+      await asAnon
+        .post(report, { reason: CommentReportReason.SPAM })
+        .expect(401);
     });
 
     it('files the report and answers 204 with no body', async () => {
@@ -461,12 +464,20 @@ describe('Comments (e2e)', () => {
       });
 
       const response = await asUser(USER)
-        .post(report, { reason: 'Malware.' })
+        .post(report, {
+          reason: CommentReportReason.SPAM,
+          detail: 'Go back to your own site.',
+        })
         .expect(204);
 
       expect(response.text).toBe('');
       expect(prisma.commentReport.createMany).toHaveBeenCalledWith({
-        data: { reporterId: USER, commentId: 'cmt_1', reason: 'Malware.' },
+        data: {
+          reporterId: USER,
+          commentId: 'cmt_1',
+          reason: CommentReportReason.SPAM,
+          detail: 'Go back to your own site.',
+        },
         skipDuplicates: true,
       });
     });
@@ -477,7 +488,9 @@ describe('Comments (e2e)', () => {
         authorId: OTHER,
       });
 
-      await asUser(USER).post(report, { reason: 'Malware.' }).expect(204);
+      await asUser(USER)
+        .post(report, { reason: CommentReportReason.SPAM })
+        .expect(204);
 
       // Nothing about the comment itself was written, so the public listing is
       // untouched and no reader — including the author — can tell it was flagged.
@@ -491,7 +504,9 @@ describe('Comments (e2e)', () => {
         authorId: OTHER,
       });
 
-      await asUser(USER).post(report, {}).expect(204);
+      await asUser(USER)
+        .post(report, { reason: CommentReportReason.SPAM })
+        .expect(204);
 
       expect(prisma.commentReport.createMany).toHaveBeenCalledWith(
         expect.objectContaining({ skipDuplicates: true }),
@@ -504,7 +519,9 @@ describe('Comments (e2e)', () => {
         authorId: USER,
       });
 
-      await asUser(USER).post(report, {}).expect(400);
+      await asUser(USER)
+        .post(report, { reason: CommentReportReason.SPAM })
+        .expect(400);
 
       expect(prisma.commentReport.createMany).not.toHaveBeenCalled();
     });
@@ -512,34 +529,61 @@ describe('Comments (e2e)', () => {
     it('404s for a comment on a different resource', async () => {
       prisma.comment.findUnique.mockResolvedValue(null);
 
-      await asUser(USER).post(report, {}).expect(404);
+      await asUser(USER)
+        .post(report, { reason: CommentReportReason.SPAM })
+        .expect(404);
 
       expect(prisma.commentReport.createMany).not.toHaveBeenCalled();
     });
 
-    it('accepts a report with no reason at all', async () => {
+    it('accepts a report with a category and no detail', async () => {
+      // The category is the required half — it is what makes a queue sortable — and
+      // the detail is optional precisely so a required wall of text cannot stop a
+      // report.
       prisma.comment.findUnique.mockResolvedValue({
         id: 'cmt_1',
         authorId: OTHER,
       });
 
-      await asUser(USER).post(report, {}).expect(204);
+      await asUser(USER)
+        .post(report, { reason: CommentReportReason.OFF_TOPIC })
+        .expect(204);
 
       expect(prisma.commentReport.createMany).toHaveBeenCalledWith({
-        data: { reporterId: USER, commentId: 'cmt_1' },
+        data: {
+          reporterId: USER,
+          commentId: 'cmt_1',
+          reason: CommentReportReason.OFF_TOPIC,
+        },
         skipDuplicates: true,
       });
     });
 
-    it('rejects a reason over the column limit', async () => {
+    it('rejects a report with no category at all', async () => {
+      // The whole reason the column went from a nullable string to a required enum.
+      await asUser(USER).post(report, {}).expect(400);
+
+      expect(prisma.commentReport.createMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects a category that is not one of the enum’s values', async () => {
+      await asUser(USER).post(report, { reason: 'MALWARE' }).expect(400);
+
+      expect(prisma.commentReport.createMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects a detail over the column limit', async () => {
       await asUser(USER)
-        .post(report, { reason: 'x'.repeat(501) })
+        .post(report, {
+          reason: CommentReportReason.SPAM,
+          detail: 'x'.repeat(501),
+        })
         .expect(400);
     });
 
     it('rejects an unknown field, since the pipe forbids extras', async () => {
       await asUser(USER)
-        .post(report, { reason: 'Malware.', punish: true })
+        .post(report, { reason: CommentReportReason.SPAM, punish: true })
         .expect(400);
     });
   });

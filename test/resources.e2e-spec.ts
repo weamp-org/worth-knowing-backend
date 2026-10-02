@@ -8,6 +8,7 @@ import { PrismaService } from './../src/prisma/prisma.service';
 import { validationPipeOptions } from './../src/validation';
 import {
   AccessType,
+  ResourceReportReason,
   ResourceType,
   UserRole,
 } from './../src/generated/prisma/enums';
@@ -50,6 +51,8 @@ describe('Resources (e2e)', () => {
   interface ReportsBody {
     items: Array<{
       id: string;
+      reason: string;
+      detail: string;
       reportCount: number;
       resource: {
         title: string;
@@ -110,7 +113,8 @@ describe('Resources (e2e)', () => {
             {
               reporterId: 'clerk_456',
               resourceId: 'res_1',
-              reason: 'This link just installed something.',
+              reason: ResourceReportReason.BROKEN_LINK,
+              detail: 'It 404s now.',
               createdAt: new Date('2026-03-01T00:00:00.000Z'),
               resource: {
                 id: 'res_1',
@@ -882,13 +886,19 @@ describe('Resources (e2e)', () => {
     });
 
     it('requires a session', async () => {
-      await request(app.getHttpServer()).post(report()).expect(401);
+      await request(app.getHttpServer())
+        .post(report())
+        .send({ reason: ResourceReportReason.SPAM })
+        .expect(401);
     });
 
     it('files the report and answers 204 with no body', async () => {
       const response = await asUser('clerk_456')
         .post(report())
-        .send({ reason: 'This link just installed something.' })
+        .send({
+          reason: ResourceReportReason.BROKEN_LINK,
+          detail: 'It 404s now.',
+        })
         .expect(204);
 
       expect(response.text).toBe('');
@@ -896,21 +906,28 @@ describe('Resources (e2e)', () => {
         data: {
           reporterId: 'clerk_456',
           resourceId: 'res_1',
-          reason: 'This link just installed something.',
+          reason: ResourceReportReason.BROKEN_LINK,
+          detail: 'It 404s now.',
         },
         skipDuplicates: true,
       });
     });
 
     it('does not change the resource, so a report is invisible to readers', async () => {
-      await asUser('clerk_456').post(report()).send({}).expect(204);
+      await asUser('clerk_456')
+        .post(report())
+        .send({ reason: ResourceReportReason.SPAM })
+        .expect(204);
 
       expect(prisma.resource.update).not.toHaveBeenCalled();
       expect(prisma.resource.delete).not.toHaveBeenCalled();
     });
 
     it('refuses a report on your own contribution', async () => {
-      await asUser('clerk_123').post(report()).send({}).expect(400);
+      await asUser('clerk_123')
+        .post(report())
+        .send({ reason: ResourceReportReason.SPAM })
+        .expect(400);
 
       expect(prisma.resourceReport.createMany).not.toHaveBeenCalled();
     });
@@ -918,29 +935,59 @@ describe('Resources (e2e)', () => {
     it('404s for a resource that is not there', async () => {
       prisma.resource.findUnique.mockResolvedValue(null);
 
-      await asUser('clerk_456').post(report()).send({}).expect(404);
+      await asUser('clerk_456')
+        .post(report())
+        .send({ reason: ResourceReportReason.SPAM })
+        .expect(404);
     });
 
-    it('accepts a report with no reason at all', async () => {
-      await asUser('clerk_456').post(report()).send({}).expect(204);
+    it('accepts a report with a category and no detail', async () => {
+      // The category is the required half — it is what makes a queue sortable — and
+      // the detail is optional precisely so a required wall of text cannot stop a
+      // report.
+      await asUser('clerk_456')
+        .post(report())
+        .send({ reason: ResourceReportReason.SPAM })
+        .expect(204);
 
       expect(prisma.resourceReport.createMany).toHaveBeenCalledWith({
-        data: { reporterId: 'clerk_456', resourceId: 'res_1' },
+        data: {
+          reporterId: 'clerk_456',
+          resourceId: 'res_1',
+          reason: ResourceReportReason.SPAM,
+        },
         skipDuplicates: true,
       });
     });
 
-    it('rejects a reason over the column limit', async () => {
+    it('rejects a report with no category at all', async () => {
+      // The whole reason the column went from a nullable string to a required enum.
+      await asUser('clerk_456').post(report()).send({}).expect(400);
+
+      expect(prisma.resourceReport.createMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects a category that is not one of the enum’s values', async () => {
       await asUser('clerk_456')
         .post(report())
-        .send({ reason: 'x'.repeat(501) })
+        .send({ reason: 'MALWARE' })
+        .expect(400);
+    });
+
+    it('rejects a detail over the column limit', async () => {
+      await asUser('clerk_456')
+        .post(report())
+        .send({
+          reason: ResourceReportReason.SPAM,
+          detail: 'x'.repeat(501),
+        })
         .expect(400);
     });
 
     it('rejects an unknown field, since the pipe forbids extras', async () => {
       await asUser('clerk_456')
         .post(report())
-        .send({ reason: 'Spam.', remove: true })
+        .send({ reason: ResourceReportReason.SPAM, remove: true })
         .expect(400);
     });
   });
@@ -989,6 +1036,8 @@ describe('Resources (e2e)', () => {
       const response = await asUser('clerk_123').get(queue).expect(200);
 
       const row = (response.body as ReportsBody).items[0];
+      expect(row.reason).toBe('BROKEN_LINK');
+      expect(row.detail).toBe('It 404s now.');
       expect(row.resource.title).toBe('Sapiens');
       expect(row.resource.why).toContain('clearest explanation');
       expect(row.reportCount).toBe(4);
@@ -1000,7 +1049,8 @@ describe('Resources (e2e)', () => {
         {
           reporterId: 'clerk_456',
           resourceId: 'res_1',
-          reason: null,
+          reason: ResourceReportReason.SPAM,
+          detail: null,
           createdAt: new Date('2026-03-01T00:00:00.000Z'),
           resource: {
             id: 'res_1',

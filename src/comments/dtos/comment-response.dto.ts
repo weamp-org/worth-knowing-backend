@@ -1,3 +1,5 @@
+import { CommentReportReason } from '../../generated/prisma/enums';
+
 /**
  * The author of a comment.
  *
@@ -150,13 +152,25 @@ export class CommentReportDto {
   reportCount: number;
 
   /**
-   * What this reporter said, or an empty string when they said nothing.
+   * What kind of problem this is.
    *
-   * Not null on the response so a client renders the text without a fallback for a
-   * case that reads as a bug. The column is nullable because not every reporter
-   * explains themselves.
+   * Required, which is what makes a queue of free text workable: without a category a
+   * moderator has to read every report before being able to group them. The values are
+   * separated by the decision they imply — `SPAM` and `ABUSE` are removal cases,
+   * `OFF_TOPIC` is a judgement call a moderator may reasonably leave.
+   * @example 'ABUSE'
    */
-  reason: string;
+  reason: CommentReportReason;
+
+  /**
+   * The reporter's own words, or an empty string.
+   *
+   * Optional while {@link reason} is required, which is the deliberate split: the
+   * category sorts the queue, and a required wall of free text would be the friction
+   * that stops somebody reporting the thing they already know is wrong.
+   * @example 'Not about the resource at all.'
+   */
+  detail: string;
 
   createdAt: Date;
 }

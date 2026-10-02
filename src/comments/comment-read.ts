@@ -1,4 +1,5 @@
 import { Prisma } from '../generated/prisma/client';
+import type { CommentReportReason } from '../generated/prisma/enums';
 
 import {
   resolveDisplayName,
@@ -116,7 +117,10 @@ export type CommentReportResponse = {
   id: string;
   comment: CommentResponse;
   reportCount: number;
-  reason: string;
+  /** What kind of problem this is. Required, so a queue can be grouped. */
+  reason: CommentReportReason;
+  /** The reporter's optional free text, or an empty string. */
+  detail: string;
   createdAt: Date;
 };
 
@@ -226,10 +230,10 @@ function toAuthorSummary(
  * own id would mean the field occasionally reads true, which would be a moderator's
  * own report appearing as their own comment.
  *
- * `reason` is flattened to an empty string rather than left null: the column is
- * nullable because not every reporter explains themselves, but a null on the response
- * would make a client render a fallback for something that reads as a bug rather
- * than as an absent reason.
+ * `detail` is flattened to an empty string rather than left null: the column is
+ * nullable because not every reporter says more than the category, but a null on the
+ * response would make a client render a fallback for something that reads as a bug
+ * rather than as an absent detail. `reason` is required and passed through as-is.
  */
 export function toCommentReportResponse(
   report: CommentReportWithComment,
@@ -238,7 +242,8 @@ export function toCommentReportResponse(
     id: `${report.commentId}:${report.reporterId}`,
     comment: toCommentResponse(report.comment),
     reportCount: report.comment._count.reports,
-    reason: report.reason ?? '',
+    reason: report.reason,
+    detail: report.detail ?? '',
     createdAt: report.createdAt,
   };
 }

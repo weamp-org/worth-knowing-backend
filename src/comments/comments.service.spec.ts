@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { Prisma } from '../generated/prisma/client';
+import { CommentReportReason } from '../generated/prisma/enums';
 
 import { CommentsService } from './comments.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -468,47 +469,65 @@ describe('CommentsService', () => {
   });
 
   describe('report', () => {
-    it('files the report against the comment and the session user', async () => {
+    /** The required half of every report below. */
+    const reason = { reason: CommentReportReason.ABUSE };
+
+    it('files the report with its category and the session user', async () => {
       await service.report(RESOURCE, 'cmt_1', USER, {
-        reason: 'Links to a site that served me malware.',
+        reason: CommentReportReason.ABUSE,
+        detail: 'Go back to your own site.',
       });
 
       expect(prisma.commentReport.createMany).toHaveBeenCalledWith({
         data: {
           reporterId: USER,
           commentId: 'cmt_1',
-          reason: 'Links to a site that served me malware.',
+          reason: CommentReportReason.ABUSE,
+          detail: 'Go back to your own site.',
+        },
+        skipDuplicates: true,
+      });
+    });
+
+    it('stores the category alone when no detail was given', async () => {
+      // The category is what sorts the queue, so it is the required half. The detail
+      // is optional precisely so a required wall of text cannot stop a report.
+      await service.report(RESOURCE, 'cmt_1', USER, reason);
+
+      expect(prisma.commentReport.createMany).toHaveBeenCalledWith({
+        data: {
+          reporterId: USER,
+          commentId: 'cmt_1',
+          reason: CommentReportReason.ABUSE,
+        },
+        skipDuplicates: true,
+      });
+    });
+
+    it('trims the detail, and drops a whitespace-only one', async () => {
+      await service.report(RESOURCE, 'cmt_1', USER, {
+        ...reason,
+        detail: '  ',
+      });
+
+      expect(prisma.commentReport.createMany).toHaveBeenCalledWith({
+        data: {
+          reporterId: USER,
+          commentId: 'cmt_1',
+          reason: CommentReportReason.ABUSE,
         },
         skipDuplicates: true,
       });
     });
 
     it('skips duplicates, so a double-click is not punished and cannot pad the count', async () => {
-      await service.report(RESOURCE, 'cmt_1', USER, {});
+      await service.report(RESOURCE, 'cmt_1', USER, reason);
 
       // `skipDuplicates` rather than a read-then-write: race-safe in a way a check is
       // not, and the composite primary key is what actually prevents the duplicate.
       expect(prisma.commentReport.createMany).toHaveBeenCalledWith(
         expect.objectContaining({ skipDuplicates: true }),
       );
-    });
-
-    it('trims the reason, so a whitespace-only one is stored as absent', async () => {
-      await service.report(RESOURCE, 'cmt_1', USER, { reason: '   ' });
-
-      expect(prisma.commentReport.createMany).toHaveBeenCalledWith({
-        data: { reporterId: USER, commentId: 'cmt_1' },
-        skipDuplicates: true,
-      });
-    });
-
-    it('omits the reason entirely when none was given', async () => {
-      await service.report(RESOURCE, 'cmt_1', USER, {});
-
-      expect(prisma.commentReport.createMany).toHaveBeenCalledWith({
-        data: { reporterId: USER, commentId: 'cmt_1' },
-        skipDuplicates: true,
-      });
     });
 
     it('refuses a report on your own comment', async () => {
@@ -518,7 +537,7 @@ describe('CommentsService', () => {
       });
 
       await expect(
-        service.report(RESOURCE, 'cmt_1', USER, {}),
+        service.report(RESOURCE, 'cmt_1', USER, reason),
       ).rejects.toBeInstanceOf(BadRequestException);
 
       expect(prisma.commentReport.createMany).not.toHaveBeenCalled();
@@ -528,7 +547,7 @@ describe('CommentsService', () => {
       prisma.comment.findUnique.mockResolvedValue(null);
 
       await expect(
-        service.report('res_other', 'cmt_1', USER, {}),
+        service.report('res_other', 'cmt_1', USER, reason),
       ).rejects.toBeInstanceOf(NotFoundException);
 
       expect(prisma.commentReport.createMany).not.toHaveBeenCalled();
@@ -541,7 +560,7 @@ describe('CommentsService', () => {
         authorId: OTHER,
       });
 
-      await service.report(RESOURCE, 'cmt_1', USER, {});
+      await service.report(RESOURCE, 'cmt_1', USER, reason);
 
       expect(prisma.commentReport.createMany).toHaveBeenCalled();
     });
@@ -617,14 +636,18 @@ describe('CommentsService', () => {
       expect(page.items[0].comment.isMine).toBe(false);
     });
 
-    it('flattens an absent reason to an empty string', async () => {
+    it('passes the category through and flattens an absent detail', async () => {
+      // The category is required and stored; only the detail is optional, and it is
+      // flattened so a client renders the text without a fallback that reads as a
+      // bug rather than as an absent detail.
       prisma.commentReport.findMany.mockResolvedValue([
-        reportRow({ reason: null }),
+        reportRow({ reason: CommentReportReason.ABUSE, detail: null }),
       ]);
 
       const page = await service.listReports();
 
-      expect(page.items[0].reason).toBe('');
+      expect(page.items[0].reason).toBe('ABUSE');
+      expect(page.items[0].detail).toBe('');
     });
 
     it('asks for one row over the page, so hasMore needs no COUNT(*)', async () => {

@@ -8,6 +8,52 @@ datasource db {
   provider = "postgresql"
 }
 
+/// Why somebody flagged a resource.
+///
+/// Organised by the *decision* each reason implies for a moderator, not by how the
+/// reporter would describe the problem. A queue sorted by category is only worth
+/// sorting by if the categories separate the actions: "remove this" and "this link is
+/// broken" are different jobs, and lumping them together makes the count unreadable.
+///
+/// `BROKEN_LINK` and `WRONG_RESOURCE` are **not removal cases at all** — the honest
+/// outcome for either is usually a fix. A `why` written carefully for a link that 404s
+/// is worth surfacing, and the product loses something real by throwing it away.
+///
+/// Deliberately **no `DUPLICATE`**, though it is the first category every directory
+/// would have. On this product two different people independently sharing the same link
+/// is the feature working, and each brings a different `why` which is the value — see
+/// `@@unique([contributorId, url])` on `Resource`. A repeat submission by the *same*
+/// contributor is already refused with a 409, so a duplicate report could only ever
+/// be pointing at something that is meant to be there.
+enum ResourceReportReason {
+  /// Advertising, link farming, or content with nothing to do with the site.
+  SPAM
+  /// Personal attacks, slurs, or an attempt to drive somebody off the site.
+  ABUSE
+  /// The link is dead, redirects somewhere unrelated, or serves something unsafe.
+  BROKEN_LINK
+  /// The title, the URL, and the `why` do not describe the same thing.
+  WRONG_RESOURCE
+  /// Does not fit the others; the reporter said more in the detail field.
+  SOMETHING_ELSE
+}
+
+/// Why somebody flagged a comment.
+///
+/// Same organising principle as `ResourceReportReason` — separated by the decision
+/// they imply — but a smaller set, because a comment has no title and no URL that can
+/// be wrong about.
+///
+/// `OFF_TOPIC` is a judgement call rather than a fault: a thread that has drifted is
+/// not broken, and a moderator may reasonably leave it.
+enum CommentReportReason {
+  SPAM
+  ABUSE
+  /// Not about the resource, or not adding to the discussion.
+  OFF_TOPIC
+  SOMETHING_ELSE
+}
+
 enum UserRole {
   USER
   ADMIN
@@ -395,11 +441,14 @@ model CommentReport {
   commentId  String
   createdAt  DateTime @default(now())
 
-  /// Optional. An empty queue of optional free text is still a usable queue, and a
-  /// required reason is a dropdown somebody has to pick from before they can report
-  /// something they plainly know is wrong. Capped short so a report is a
-  /// complaint, not a second comment — the place to argue is the thread.
-  reason String? @db.VarChar(500)
+  /// Optional, and capped short. **The category is required and this is not**, and
+  /// the split is deliberate: the category is what makes a moderator's queue sortable,
+  /// while a required wall of free text would be exactly the friction that stops
+  /// somebody reporting the thing they already know is wrong.
+  detail String? @db.VarChar(500)
+
+  /// Required, and why — see `ResourceReportReason` for why there is no `DUPLICATE`.
+  reason CommentReportReason
 
   /// Cascading, unlike `Comment.authorId`. A report exists only to point at a
   /// comment; when the comment is gone there is nothing left to act on, and a queue
@@ -450,11 +499,16 @@ model ResourceReport {
   resourceId String
   createdAt  DateTime @default(now())
 
-  /// Optional, and capped short, for the same reasons as `CommentReport.reason`: a
-  /// required reason is a dropdown somebody has to pick from before they can flag
-  /// something they plainly know is wrong, and a report is a complaint rather than a
-  /// second contribution.
-  reason String? @db.VarChar(500)
+  /// Optional, and capped short, for the same reasons as `CommentReport.detail`: a
+  /// required free-text field is a wall in front of somebody who plainly knows
+  /// something is wrong, and a report is a complaint rather than a second
+  /// contribution.
+  detail String? @db.VarChar(500)
+
+  /// Required, and the reason a queue can be sorted at all. Free text alone would mean
+  /// a moderator reads every report individually before being able to group them,
+  /// which is what makes a queue expensive to work through.
+  reason ResourceReportReason
 
   /// Cascading. A report exists only to point at a resource, and a resource deletion
   /// is a hard delete for everyone — so the reports go with it rather than piling up
