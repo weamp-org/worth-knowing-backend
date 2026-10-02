@@ -1160,4 +1160,58 @@ describe('Resources (e2e)', () => {
       );
     });
   });
+
+  describe('POST /resource-reports/:id/undismiss', () => {
+    const undismiss = '/api/v1/resource-reports/res_1/undismiss';
+
+    it('refuses a signed-out reader', async () => {
+      await request(app.getHttpServer()).post(undismiss).expect(401);
+    });
+
+    it('refuses a signed-in non-admin', async () => {
+      await asUser('clerk_123').post(undismiss).expect(403);
+
+      expect(prisma.resourceReport.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('lets an admin reopen the reports, and answers 204', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      await asUser('clerk_123').post(undismiss).expect(204);
+
+      expect(prisma.resourceReport.updateMany).toHaveBeenCalledWith({
+        where: { resourceId: 'res_1', dismissedAt: { not: null } },
+        data: { dismissedAt: null },
+      });
+    });
+
+    it('reopens only rows a dismissal closed', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      await asUser('clerk_123').post(undismiss).expect(204);
+
+      // A report filed *after* the dismissal is already queued; reopening must leave it
+      // alone rather than disturbing a report nobody resolved.
+      expect(prisma.resourceReport.updateMany).toHaveBeenCalledWith(
+        dataContaining({
+          where: { resourceId: 'res_1', dismissedAt: { not: null } },
+        }),
+      );
+    });
+
+    it('does not remove the contribution', async () => {
+      currentUserRole = UserRole.ADMIN;
+
+      await asUser('clerk_123').post(undismiss).expect(204);
+
+      expect(prisma.resource.delete).not.toHaveBeenCalled();
+    });
+
+    it('succeeds when nothing was dismissed', async () => {
+      currentUserRole = UserRole.ADMIN;
+      prisma.resourceReport.updateMany.mockResolvedValue({ count: 0 });
+
+      await asUser('clerk_123').post(undismiss).expect(204);
+    });
+  });
 });

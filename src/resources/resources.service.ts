@@ -493,6 +493,31 @@ export class ResourcesService {
     });
   }
 
+  /**
+   * Puts a dismissed contribution's reports back in the queue.
+   *
+   * The inverse of {@link dismiss}, and the reason dismissal needs no confirmation
+   * dialog: without a way back, a mis-click would be permanent in practice.
+   *
+   * Offered by the client as an **Undo on the toast** rather than as a dialog asking
+   * first. A dialog costs an extra click on the *safe* action to guard against one rare
+   * mistake, and a dialog on every moderation action is how people learn to click
+   * through them — including the remove one, which is the only one that genuinely
+   * needs reading.
+   *
+   * Only rows a dismissal actually closed are reopened. A report filed after the
+   * dismissal is already `dismissedAt: null` and already queued, so this leaves it
+   * alone rather than disturbing a report nobody resolved.
+   *
+   * Idempotent, and `204` either way.
+   */
+  async undismiss(resourceId: string): Promise<void> {
+    await this.prisma.resourceReport.updateMany({
+      where: { resourceId, dismissedAt: { not: null } },
+      data: { dismissedAt: null },
+    });
+  }
+
   async remove(id: string, actorId: string) {
     await this.assertCanModify(id, actorId);
 

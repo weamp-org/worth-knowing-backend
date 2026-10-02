@@ -315,6 +315,32 @@ export class CommentsService {
     });
   }
 
+  /**
+   * Puts a dismissed comment's reports back in the queue.
+   *
+   * The inverse of {@link dismiss}, and the reason dismissal is safe to offer without
+   * a confirmation: "reversible in the database" is not "reversible for you", so
+   * without this a mis-click would be permanent in practice.
+   *
+   * Offered by the client as an **Undo on the toast**, not as a dialog asking first.
+   * A dialog costs every moderator an extra click on the *safe* action to guard
+   * against one rare mistake, and a dialog on every moderation action is how people
+   * learn to click through them — including the delete one, which is the only one
+   * that genuinely needs reading.
+   *
+   * Only rows a dismissal actually closed are reopened. A report filed after the
+   * dismissal is already `dismissedAt: null` and already in the queue, so this leaves
+   * it exactly where it is rather than disturbing a report that was never resolved.
+   *
+   * Idempotent, and `204` either way, for the same reason as the dismissal.
+   */
+  async undismiss(commentId: string): Promise<void> {
+    await this.prisma.commentReport.updateMany({
+      where: { commentId, dismissedAt: { not: null } },
+      data: { dismissedAt: null },
+    });
+  }
+
   async remove(
     resourceId: string,
     commentId: string,

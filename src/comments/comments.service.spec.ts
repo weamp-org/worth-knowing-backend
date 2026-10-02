@@ -778,4 +778,42 @@ describe('CommentsService', () => {
       await expect(service.dismiss('cmt_unknown')).resolves.toBeUndefined();
     });
   });
+
+  describe('undismiss', () => {
+    it('reopens every dismissed report on the comment', async () => {
+      await service.undismiss('cmt_1');
+
+      // The safety net that lets the client skip a confirmation dialog: without a way
+      // back, a mis-click would be permanent in practice.
+      expect(prisma.commentReport.updateMany).toHaveBeenCalledWith({
+        where: { commentId: 'cmt_1', dismissedAt: { not: null } },
+        data: { dismissedAt: null },
+      });
+    });
+
+    it('touches only rows a dismissal closed', async () => {
+      await service.undismiss('cmt_1');
+
+      // `not: null` rather than every row: a report filed *after* the dismissal is
+      // already open and already queued, so reopening must leave it exactly where it
+      // is rather than disturbing a report nobody resolved.
+      expect(prisma.commentReport.updateMany).toHaveBeenCalledWith(
+        dataContaining({
+          where: { commentId: 'cmt_1', dismissedAt: { not: null } },
+        }),
+      );
+    });
+
+    it('does not remove the comment on the way through', async () => {
+      await service.undismiss('cmt_1');
+
+      expect(prisma.comment.delete).not.toHaveBeenCalled();
+    });
+
+    it('succeeds when nothing was dismissed', async () => {
+      prisma.commentReport.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.undismiss('cmt_1')).resolves.toBeUndefined();
+    });
+  });
 });

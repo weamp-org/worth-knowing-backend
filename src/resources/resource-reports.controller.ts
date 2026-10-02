@@ -82,8 +82,18 @@ export class ResourceReportsController {
    * people reported is several rows and one decision has to close all of them. That is
    * what makes a queue finishable.
    *
-   * Idempotent: two moderators reaching for the same row at once is ordinary, and
-   * neither should see an error for it.
+   * Idempotent: two moderators reaching for the row at once is ordinary, and neither
+   * should see an error for it.
+   *
+   * **No confirmation dialog on the client**, and that is deliberate rather than an
+   * oversight. Dismissal deletes nothing — the contribution and the report rows both
+   * stay, and `dismissedAt` is a nullable column — so it is the reversible action and
+   * confirmation belongs on the irreversible one. Asking here would also make
+   * dismissal feel as heavy as removal, and the path of least resistance would then be
+   * remove-or-do-nothing: friction on exactly the decision a moderator should be
+   * making more often. `docs/comments.md` records the reasoning.
+   *
+   * The recovery path is {@link undismiss}, offered as an Undo on the toast.
    */
   @Post(':resourceId/dismiss')
   @HttpCode(HttpStatus.NO_CONTENT)
@@ -98,5 +108,37 @@ export class ResourceReportsController {
   @ApiForbiddenResponse({ description: 'Caller is not an admin' })
   dismiss(@Param('resourceId') resourceId: string) {
     return this.resourcesService.dismiss(resourceId);
+  }
+
+  /**
+   * Puts a dismissed contribution's reports back in the queue.
+   *
+   * Exists because "reversible in the database" is not "reversible for you". Without
+   * it, dismissal is the one moderation action with no safety net, and a mis-click is
+   * permanent in practice — which is why the client offers this as an **Undo on the
+   * toast** rather than asking for confirmation first.
+   *
+   * An Undo that restores the rows is the better shape for two reasons: a confirmation
+   * dialog costs every moderator two clicks on the safe action to guard against one
+   * rare mistake, and a dialog on every moderation action is how people learn to click
+   * through them — including the remove one, which is the only one that genuinely
+   * needs reading.
+   *
+   * Only rows a dismissal actually closed are reopened. A report filed *after* the
+   * dismissal is already in the queue and is left exactly where it is.
+   *
+   * Idempotent, like the dismissal it reverses.
+   */
+  @Post(':resourceId/undismiss')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Roles(UserRole.ADMIN)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Reopen every dismissed report on a contribution (admin only)',
+  })
+  @ApiUnauthorizedResponse({ description: 'No valid Clerk session' })
+  @ApiForbiddenResponse({ description: 'Caller is not an admin' })
+  undismiss(@Param('resourceId') resourceId: string) {
+    return this.resourcesService.undismiss(resourceId);
   }
 }

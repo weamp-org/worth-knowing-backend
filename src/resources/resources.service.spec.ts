@@ -1377,4 +1377,41 @@ describe('ResourcesService', () => {
       await expect(service.dismiss('res_unknown')).resolves.toBeUndefined();
     });
   });
+
+  describe('undismiss', () => {
+    it('reopens every dismissed report on the contribution', async () => {
+      await service.undismiss('res_1');
+
+      // The safety net that lets the client skip a confirmation dialog.
+      expect(prisma.resourceReport.updateMany).toHaveBeenCalledWith({
+        where: { resourceId: 'res_1', dismissedAt: { not: null } },
+        data: { dismissedAt: null },
+      });
+    });
+
+    it('touches only rows a dismissal closed', async () => {
+      await service.undismiss('res_1');
+
+      // `not: null` rather than every row: a report filed *after* the dismissal is
+      // already open and already queued, so reopening must leave it where it is rather
+      // than disturbing a report nobody resolved.
+      expect(prisma.resourceReport.updateMany).toHaveBeenCalledWith(
+        dataContaining({
+          where: { resourceId: 'res_1', dismissedAt: { not: null } },
+        }),
+      );
+    });
+
+    it('does not remove the contribution on the way through', async () => {
+      await service.undismiss('res_1');
+
+      expect(prisma.resource.delete).not.toHaveBeenCalled();
+    });
+
+    it('succeeds when nothing was dismissed', async () => {
+      prisma.resourceReport.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.undismiss('res_1')).resolves.toBeUndefined();
+    });
+  });
 });

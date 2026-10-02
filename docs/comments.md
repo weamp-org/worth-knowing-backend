@@ -248,8 +248,10 @@ identical shapes even though both primary keys are actor-first.
 ## Dismissing
 
 ```
-POST /api/v1/resource-reports/:resourceId/dismiss   204, admin only
-POST /api/v1/comment-reports/:commentId/dismiss     204, admin only
+POST /api/v1/resource-reports/:resourceId/dismiss    204, admin only
+POST /api/v1/resource-reports/:resourceId/undismiss  204, admin only
+POST /api/v1/comment-reports/:commentId/dismiss      204, admin only
+POST /api/v1/comment-reports/:commentId/undismiss    204, admin only
 ```
 
 "I looked at this and it stays." The third thing a moderator can do with a report,
@@ -289,6 +291,35 @@ Idempotent — `where: { dismissedAt: null }` means a second dismissal matches n
 rather than erroring, because two moderators reaching for the same row at once is
 ordinary and neither should see a failure for it. Same reasoning as `POST /saved` and
 `DELETE /saved/:resourceId`.
+
+### Dismissal asks nothing, and is undoable instead
+
+**No confirmation dialog**, deliberately — and this is a decision, not an omission.
+
+The argument for confirming is that a mis-click is permanent in practice: the column is
+reversible in the database, but with no way back through the UI, "reversible" is a
+comfort nobody gets. That is a real gap.
+
+The better fix is **Undo on the toast**, which is what the client offers, and it beats a
+dialog for two reasons:
+
+- A confirmation costs every moderator an extra click on the **safe** action to guard
+  against one rare mistake. It also makes dismissal feel as heavy as removal, and then
+  the path of least resistance is remove-or-do-nothing — friction on exactly the
+  decision a moderator should be making more often.
+- A dialog on every moderation action is how people learn to click through dialogs,
+  including the delete one, which is the only one that genuinely needs reading. The
+  same principle is already written down in `docs/profiles.md`: _"a dialog on every
+  save is how people learn to click through dialogs."_
+
+So the line is **confirm the irreversible action only**. Removing a comment or
+contribution is permanent and un-undoable, so it asks. Closing a report is neither, so
+it does not.
+
+`undismiss` is the inverse: `dismissedAt: null` on every row for the target that is
+not already null. Only rows a dismissal actually closed are reopened — a report filed
+_after_ the dismissal is already `dismissedAt: null` and already queued, so this leaves
+it exactly where it is rather than disturbing a report nobody resolved.
 
 ### A report filed after a dismissal comes back
 
@@ -402,10 +433,9 @@ link to them, so a page needs it without a second request.
   make a comment disappear with no human deciding, and with no reputation on this site
   yet there is nothing stopping three coordinated accounts from burying a thread.
   Moderation stays a person reading a queue.
-- **Un-dismissing, and a "show dismissed" view.** The column supports both and neither
-  is built: `dismissedAt = null` restores a row, and a filtered view would let a
-  moderator check what a colleague closed. Left out because a dismissal is currently a
-  one-way street and there is no evidence anyone needs either.
+- **A "show dismissed" view.** Un-dismissing is built; seeing what a colleague closed is
+  not. It would be a `?dismissed=true` filter on both queues, and left out because
+  there is no evidence anyone needs to audit a dismissal rather than make one.
 
 ## Schema
 
