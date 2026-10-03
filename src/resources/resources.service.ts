@@ -9,7 +9,7 @@ import { Prisma } from '../generated/prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { TagsService } from '../tags/tags.service';
-import { UserRole } from '../generated/prisma/enums';
+import { AccessType, ResourceType, UserRole } from '../generated/prisma/enums';
 import {
   decodeCursor,
   decodeRankedCursor,
@@ -28,6 +28,8 @@ import {
   type RankedResource,
 } from './resource-search';
 import {
+  DEFAULT_RESOURCE_SORT,
+  ResourceSort,
   resourceInclude,
   resourceOrderBy,
   toResourceResponse,
@@ -77,6 +79,13 @@ export interface ListResourcesOptions {
   viewerId?: string;
   /** Free text. Trimmed, and a blank value means "no search". */
   q?: string;
+  type?: ResourceType;
+  accessType?: AccessType;
+  /**
+   * Omitted means relevance when there is a `q`, and newest-first otherwise. That
+   * is the whole of the interaction between the two; see {@link findAll}.
+   */
+  sort?: ResourceSort;
 }
 
 /** The search half of {@link ListResourcesOptions}, once `q` has resolved to a needle. */
@@ -87,6 +96,8 @@ interface SearchResourcesOptions {
   viewerId?: string;
   tag?: string;
   contributorUsername?: string;
+  type?: ResourceType;
+  accessType?: AccessType;
 }
 
 @Injectable()
@@ -356,6 +367,9 @@ export class ResourcesService {
     viewerId,
     contributorUsername,
     q,
+    type,
+    accessType,
+    sort,
   }: ListResourcesOptions) {
     const take = limit ?? DEFAULT_PAGE_SIZE;
 
@@ -364,7 +378,22 @@ export class ResourcesService {
     // did not search for nothing, they stopped searching.
     const needle = q?.trim() ? q.trim() : undefined;
 
-    if (needle) {
+    /*
+     * Relevance is the *absence* of a `sort`, not a `sort` value.
+     *
+     * Two conditions, and both matter:
+     *
+     * - A needle is required. With nothing to rank against, relevance has no
+     *   meaning, so an explicit ordering has to win.
+     * - An explicit `sort` overrides it. `?q=…&sort=title` is a coherent and
+     *   useful request — every match, alphabetically — and it is the reason
+     *   relevance is not simply "whatever the default ordering happens to be".
+     *
+     * This is also the only place the two cursor regimes are chosen, which keeps
+     * them from disagreeing: relevance carries `(score, id)`, and every column
+     * ordering carries a bare id.
+     */
+    if (needle && sort === undefined) {
       return this.searchResources({
         needle,
         take,
@@ -374,14 +403,19 @@ export class ResourcesService {
         viewerId,
         tag,
         contributorUsername,
+        type,
+        accessType,
       });
     }
 
-    // `AND` rather than two ternaries into one object: tag and contributor are
-    // independent, and a profile page's listing uses the contributor alone while
-    // the feed uses the tag alone, but a caller may send both.
+    // Each key is independent and a caller may send any combination of them, so
+    // this is assembled by spreading rather than as a chain of ternaries that pick
+    // one filter: a profile page uses contributor alone, the feed uses tag alone,
+    // a browse page uses type and accessType, and all of them are reachable at once.
     const where: Prisma.ResourceWhereInput = {
       ...(tag ? { tags: { some: { slug: tag } } } : {}),
+      ...(type ? { type } : {}),
+      ...(accessType ? { accessType } : {}),
       ...(contributorUsername
         ? {
             contributor: { usernameLower: contributorUsername },
@@ -413,7 +447,7 @@ export class ResourcesService {
     try {
       rows = await this.prisma.resource.findMany({
         where: Object.keys(where).length > 0 ? where : undefined,
-        orderBy: resourceOrderBy,
+        orderBy: resourceOrderBy[sort ?? DEFAULT_RESOURCE_SORT],
         take: take + 1,
         ...(cursor
           ? { cursor: { id: decodeCursor(cursor) }, skip: 1 }
@@ -457,6 +491,8 @@ export class ResourcesService {
     viewerId,
     tag,
     contributorUsername,
+    type,
+    accessType,
   }: SearchResourcesOptions) {
     const ranked = await this.prisma.$queryRaw<RankedResource[]>(
       buildRankedResourceQuery({
@@ -464,6 +500,8 @@ export class ResourcesService {
         take: take + 1,
         tag,
         contributorUsername,
+        type,
+        accessType,
         cursor,
       }),
     );

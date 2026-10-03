@@ -1,4 +1,5 @@
 import { Prisma } from '../generated/prisma/client';
+import { AccessType, ResourceType } from '../generated/prisma/enums';
 
 /**
  * Resource search: scoring, and the raw query that applies it.
@@ -136,6 +137,8 @@ export interface RankedSearchQuery {
   tag?: string;
   /** See the anonymity note in the query body. */
   contributorUsername?: string;
+  type?: ResourceType;
+  accessType?: AccessType;
   cursor?: { score: number; id: string };
 }
 
@@ -153,6 +156,8 @@ export function buildRankedResourceQuery({
   take,
   tag,
   contributorUsername,
+  type,
+  accessType,
   cursor,
 }: RankedSearchQuery): Prisma.Sql {
   const filters: Prisma.Sql[] = [];
@@ -165,6 +170,29 @@ export function buildRankedResourceQuery({
         WHERE rt."A" = r."id" AND t."slug" = ${tag}
       )
     `);
+  }
+
+  /*
+   * The enum filters need an explicit cast.
+   *
+   * Prisma binds a JavaScript string, so `"type" = $1` compares `text` against
+   * `ResourceType` and Postgres rejects it — there is no implicit cast between an
+   * enum and text. `CAST(... AS "ResourceType")` says what is meant and lets
+   * Postgres validate the value while it is there, which is why this is a cast
+   * rather than a string-interpolated literal: an enum value that somehow did not
+   * exist becomes a database error rather than a silently-empty result set.
+   *
+   * The alternative would be `${type}::"ResourceType"`, which is the same thing
+   * written shorter and casts less legibly.
+   */
+  if (type) {
+    filters.push(Prisma.sql`r."type" = CAST(${type} AS "ResourceType")`);
+  }
+
+  if (accessType) {
+    filters.push(
+      Prisma.sql`r."accessType" = CAST(${accessType} AS "AccessType")`,
+    );
   }
 
   if (contributorUsername) {

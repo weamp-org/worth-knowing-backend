@@ -52,14 +52,74 @@ export const resourceInclude = {
 } as const;
 
 /**
+ * The orderings a client may ask for.
+ *
+ * A single enum of **complete orderings** rather than a `sort` field plus an
+ * `order` direction. Two parameters would allow states that mean nothing —
+ * `sort=title&order=sideways` — and every one of them would need a rule. Naming
+ * the whole ordering in one word makes every value something actually
+ * implemented.
+ *
+ * Deliberately absent: relevance. It is not a `sort` value but the *absence* of
+ * one, because it only means anything when there is a `q` to be relevant to, and
+ * making it a value would mean defining a fourth state for `sort=relevance` with
+ * no query. See {@link ResourceSort} in the service for how the two interact.
+ *
+ * Also absent: `saved`. See {@link resourceOrderBy} — that is a real constraint,
+ * not an oversight.
+ */
+export enum ResourceSort {
+  /** `createdAt` descending. The default posture of the site. */
+  Newest = 'newest',
+  /** `createdAt` ascending. */
+  Oldest = 'oldest',
+  /** `title` ascending, so a browse page can be walked alphabetically. */
+  Title = 'title',
+}
+
+/** What a client gets when it asks for no particular ordering. */
+export const DEFAULT_RESOURCE_SORT = ResourceSort.Newest;
+
+/**
  * Newest first, with `id` as a tiebreaker. `createdAt` alone is not unique, and
  * without a total order a cursor can skip or repeat rows when several resources
  * share a timestamp — which they will, since `now()` has millisecond resolution.
+ *
+ * The tiebreaker is load-bearing in all three, and its **direction follows the
+ * primary sort's**. `createdAt DESC, id ASC` is still a total order, but it reads
+ * as a mistake, and on a title sort a descending tiebreak would scramble equal
+ * titles between pages for no benefit.
+ *
+ * Every value here is a plain column ordering, which is why none of them needs a
+ * different cursor: Prisma resolves `cursor: { id }` against the *current*
+ * `orderBy`, so a client can page through a title-sorted list with exactly the
+ * bare-id cursor it uses for newest-first. That property is what makes sorting
+ * cheap here, and it is precisely what a computed ordering does not have — see the
+ * relevance path in `resource-search.ts`.
+ *
+ * **`savedCount` and `commentCount` are deliberately not sortable.**
+ * `docs/saved.md` declined them for the pagination half of the reason; the other
+ * half is worse. The count *moves while somebody is paging*. Sort by `savedCount`
+ * and one person saving a resource between page one and page two shifts every row
+ * beneath it, so the cursor repeats some rows and skips others — silently, in a
+ * way no test catches and no user can explain.
+ *
+ * A fixed top-N by saved count is a different question and a safe one, because
+ * nothing is paging and so nothing can shift. That is why a "most saved" section
+ * is fine and this is not.
+ *
+ * `accessType` is filterable but not sortable, and is unindexed. A four-value
+ * column is one the planner often skips a btree for anyway, and the filter is
+ * broad enough that it narrows a browsable set on its own.
  */
-export const resourceOrderBy = [
-  { createdAt: 'desc' },
-  { id: 'desc' },
-] satisfies Prisma.ResourceOrderByWithRelationInput[];
+export const resourceOrderBy: Record<
+  ResourceSort,
+  Prisma.ResourceOrderByWithRelationInput[]
+> = {
+  [ResourceSort.Newest]: [{ createdAt: 'desc' }, { id: 'desc' }],
+  [ResourceSort.Oldest]: [{ createdAt: 'asc' }, { id: 'asc' }],
+  [ResourceSort.Title]: [{ title: 'asc' }, { id: 'asc' }],
+};
 
 /** A resource row as read, before any redaction. */
 export type ResourceWithRelations = Prisma.ResourceGetPayload<{

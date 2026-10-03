@@ -223,6 +223,22 @@ duplicate-URL check's `{ contributorId, url }` predicate as a prefix.
 - Ordering is `createdAt DESC, id DESC`. The `id` tiebreaker is **load-bearing**:
   `createdAt` is not unique, and a cursor over a non-total order silently skips
   or repeats rows when several resources share a millisecond.
+- `?sort=` chooses the ordering: `newest` (the default), `oldest`, or `title`.
+  One enum of complete orderings rather than a `sort` field plus an `order`
+  direction, because two parameters admit combinations that mean nothing
+  (`sort=title&order=sideways`) and each would need a rule.
+- Every `?sort=` value is a plain column ordering, so **all of them page with the
+  same bare-id cursor** — Prisma resolves `cursor: { id }` against the current
+  `orderBy`. That is what makes sorting cheap here, and it is exactly what the
+  relevance ordering is not.
+- `?type=` and `?accessType=` filter by the schema's own enums, validated with
+  `@IsEnum` so adding a member to `schema.prisma` widens the filter without a
+  code change. They take a single value; `?type=BOOK&type=COURSE` is a
+  reasonable next step and is not built.
+- `savedCount` and `commentCount` are deliberately **not sortable**. See
+  `resourceOrderBy` — the count moves while somebody is paging, which duplicates
+  and skips rows silently. A fixed top-N by saved count is a safe different
+  question, which is why a "most saved" section is fine and this is not.
 - `nextCursor` is `null` on the last page. It is computed by fetching
   `limit + 1` rows rather than running a `COUNT(*)`, so paging costs the same
   regardless of table size.
@@ -262,6 +278,12 @@ ordering only cares about the total.
 
 - `?q=` blank or whitespace is **not** a search. It falls through to the
   unfiltered feed, so `?q=` and `/` cannot disagree about what is being shown.
+- `?type=`, `?accessType=` and `?sort=` all apply to search as well as the feed.
+  `sort` **overrides** relevance — `?q=…&sort=title` means every match,
+  alphabetically — which is why relevance is modelled as the _absence_ of `sort`
+  rather than as a `sort` value. `ResourceSort` therefore has no `relevance`
+  member, and adding one would mean defining what `sort=relevance` means with no
+  `q` present.
 - A feed cursor is rejected on a search request and vice versa. Both decoders
   reject the other's shape rather than paging from an undefined position.
 - `?q=` is capped at 100 characters. Trigram comparison cost grows with the

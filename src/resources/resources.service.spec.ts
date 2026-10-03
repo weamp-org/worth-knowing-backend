@@ -18,6 +18,7 @@ import {
   UserRole,
 } from '../generated/prisma/enums';
 import { CreateResourceDto } from './dtos/create-resource.dto';
+import { ResourceSort } from './resource-read';
 
 const createDto = {
   title: 'Sapiens',
@@ -1041,6 +1042,212 @@ describe('ResourcesService', () => {
       await service.findAll({ q: 'sapiens' });
 
       expect(rawSql()).not.toContain('r."isAnonymous" = false');
+    });
+
+    // The enum filters need an explicit CAST: Prisma binds a string, and Postgres
+    // has no implicit cast between text and an enum. Placeholders are numbered
+    // (`$15`), so these match the shape rather than a literal `$`.
+    it('narrows the ranking to a resource type', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+
+      await service.findAll({ q: 'sapiens', type: ResourceType.BOOK });
+
+      expect(rawSql()).toMatch(/r\."type" = CAST\(\$\d+ AS "ResourceType"\)/);
+      expect(prisma.$queryRaw).toHaveBeenCalledWith(
+        expect.objectContaining({
+          values: valuesContaining(ResourceType.BOOK),
+        }),
+      );
+    });
+
+    it('narrows the ranking to an access level', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+
+      await service.findAll({ q: 'sapiens', accessType: AccessType.FREE });
+
+      expect(rawSql()).toMatch(
+        /r\."accessType" = CAST\(\$\d+ AS "AccessType"\)/,
+      );
+      expect(prisma.$queryRaw).toHaveBeenCalledWith(
+        expect.objectContaining({ values: valuesContaining(AccessType.FREE) }),
+      );
+    });
+
+    it('combines a type filter with a tag filter', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+
+      await service.findAll({
+        q: 'sapiens',
+        type: ResourceType.BOOK,
+        tag: 'evolution',
+      });
+
+      const sql = rawSql();
+      expect(sql).toMatch(/r\."type" = CAST\(\$\d+ AS "ResourceType"\)/);
+      expect(sql).toContain('t."slug" = $');
+    });
+  });
+
+  describe('type and access filters', () => {
+    const row = (id: string) => ({
+      id,
+      contributorId: 'user_1',
+      contributor: null,
+      isAnonymous: false,
+      tags: [],
+      _count: { savedResources: 0 },
+    });
+
+    const where = (): Record<string, unknown> => {
+      const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
+        [{ where?: Record<string, unknown> }],
+      ];
+      return arg.where ?? {};
+    };
+
+    it('filters by resource type', async () => {
+      prisma.resource.findMany.mockResolvedValue([row('a')]);
+
+      await service.findAll({ type: ResourceType.BOOK });
+
+      expect(where()).toEqual({ type: ResourceType.BOOK });
+    });
+
+    it('filters by access type', async () => {
+      prisma.resource.findMany.mockResolvedValue([row('a')]);
+
+      await service.findAll({ accessType: AccessType.FREE });
+
+      expect(where()).toEqual({ accessType: AccessType.FREE });
+    });
+
+    // Each filter is independent, so a browse page sending all of them must get
+    // all of them rather than the last one winning.
+    it('combines every filter rather than letting one replace another', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll({
+        tag: 'evolution',
+        type: ResourceType.BOOK,
+        accessType: AccessType.FREE,
+        contributorUsername: 'ada',
+      });
+
+      expect(where()).toEqual({
+        tags: { some: { slug: 'evolution' } },
+        type: ResourceType.BOOK,
+        accessType: AccessType.FREE,
+        contributor: { usernameLower: 'ada' },
+        isAnonymous: false,
+      });
+    });
+
+    it('passes no where clause when nothing is filtered', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll({});
+
+      const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
+        [{ where?: unknown }],
+      ];
+      expect(arg.where).toBeUndefined();
+    });
+  });
+
+  describe('ordering', () => {
+    const orderBy = (): { id: string }[] => {
+      const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
+        [{ orderBy: { id: string }[] }],
+      ];
+      return arg.orderBy;
+    };
+
+    it('defaults to newest first', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll({});
+
+      expect(orderBy()).toEqual([{ createdAt: 'desc' }, { id: 'desc' }]);
+    });
+
+    it('orders oldest first when asked', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll({ sort: ResourceSort.Oldest });
+
+      expect(orderBy()).toEqual([{ createdAt: 'asc' }, { id: 'asc' }]);
+    });
+
+    // Every ordering carries an `id` tiebreaker, and it points the same way as the
+    // primary sort. A total order is what makes the bare-id cursor safe; a
+    // backwards tiebreak is still a total order but reads as a bug.
+    it('orders by title, tiebreaking in the same direction', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll({ sort: ResourceSort.Title });
+
+      expect(orderBy()).toEqual([{ title: 'asc' }, { id: 'asc' }]);
+    });
+
+    it.each([
+      [ResourceSort.Newest, [{ createdAt: 'desc' }, { id: 'desc' }]],
+      [ResourceSort.Oldest, [{ createdAt: 'asc' }, { id: 'asc' }]],
+      [ResourceSort.Title, [{ title: 'asc' }, { id: 'asc' }]],
+    ])('gives every ordering an id tiebreaker (%s)', async (sort, expected) => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll({ sort });
+
+      expect(orderBy()).toEqual(expected);
+      // The tiebreaker is load-bearing, not decoration.
+      expect(orderBy()).toHaveLength(2);
+      expect(orderBy()[1]).toHaveProperty('id');
+    });
+
+    /*
+     * The interaction that makes relevance the absence of `sort` rather than a
+     * value: an explicit ordering overrides relevance, so `?q=…&sort=title` reads
+     * as "every match, alphabetically" rather than an error or a contradiction.
+     */
+    it('lets an explicit sort override relevance', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll({ q: 'sapiens', sort: ResourceSort.Title });
+
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      expect(orderBy()).toEqual([{ title: 'asc' }, { id: 'asc' }]);
+    });
+
+    // Which also means it pages with the ordinary bare-id cursor rather than a
+    // ranked one. This branch is what keeps the two cursor regimes from mixing.
+    it('pages a sorted search with a bare id cursor', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll({
+        q: 'sapiens',
+        sort: ResourceSort.Oldest,
+        cursor: encodeCursor('ckq8f2'),
+      });
+
+      expect(prisma.resource.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ cursor: { id: 'ckq8f2' }, skip: 1 }),
+      );
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    // A ranked cursor arriving on a column-ordered request decodes as an id, finds
+    // no row, and yields an empty page. Not a 500, and consistent with the
+    // documented behaviour for an unknown cursor.
+    it('does not blow up when a ranked cursor meets a sorted request', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      const result = await service.findAll({
+        q: 'sapiens',
+        sort: ResourceSort.Title,
+        cursor: encodeRankedCursor(100, 'ckq8f2'),
+      });
+
+      expect(result).toEqual({ items: [], nextCursor: null });
     });
   });
 

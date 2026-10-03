@@ -1,5 +1,11 @@
 import { Transform } from 'class-transformer';
-import { IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import {
+  IsEnum,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+} from 'class-validator';
 
 import { PaginationQueryDto } from '../../pagination/pagination-query.dto';
 import { TAG_SLUG_MAX_LENGTH } from '../../tags/slugify.util';
@@ -7,6 +13,8 @@ import {
   USERNAME_MAX_LENGTH,
   normalizeUsername,
 } from '../../users/username.util';
+import { AccessType, ResourceType } from '../../generated/prisma/enums';
+import { ResourceSort } from '../resource-read';
 
 /**
  * Longest `q` accepted.
@@ -82,4 +90,50 @@ export class ListResourcesQueryDto extends PaginationQueryDto {
     typeof value === 'string' ? value.trim() : value,
   )
   q?: string;
+
+  /**
+   * Restrict to one kind of resource.
+   *
+   * Validated against the schema's own enum rather than a regex, so a type that
+   * is added to `schema.prisma` is accepted here without touching this file and
+   * one that is removed stops being accepted instead of silently matching nothing.
+   *
+   * Single value only. `?type=BOOK&type=COURSE` is a reasonable next step and is
+   * additive when wanted — an array with a cap — but it is not built now, and
+   * saying so is cheaper than shipping a half-formed version of it.
+   * @example 'BOOK'
+   */
+  @IsOptional()
+  @IsEnum(ResourceType)
+  type?: ResourceType;
+
+  /**
+   * Restrict to one access level.
+   *
+   * `UNKNOWN` is the schema default, which means a resource nobody has classified
+   * is genuinely `UNKNOWN` rather than absent — so a browse page filtering on
+   * `FREE` will not silently include unclassified resources. That is the honest
+   * behaviour, and the alternative (treating `UNKNOWN` as a wildcard) would make
+   * the filter lie about what it matched.
+   * @example 'FREE'
+   */
+  @IsOptional()
+  @IsEnum(AccessType)
+  accessType?: AccessType;
+
+  /**
+   * Ordering. Omit it for newest first — or for relevance, if `q` is present.
+   *
+   * See {@link ResourceSort} for the values and for why relevance is the absence
+   * of this parameter rather than one of them.
+   *
+   * Note that `?q=` with a `sort` set is meaningful and not contradictory: it
+   * means "everything that matched, in this order" rather than "best matches
+   * first". Both are worth having, and both fall out of leaving relevance as the
+   * no-`sort` case.
+   * @example 'title'
+   */
+  @IsOptional()
+  @IsEnum(ResourceSort)
+  sort?: ResourceSort;
 }

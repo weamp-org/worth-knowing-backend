@@ -817,11 +817,111 @@ describe('Resources (e2e)', () => {
         .expect(400);
     });
 
-    it('GET /api/v1/resources?tag= rejects an unknown query parameter', async () => {
+    // `?type=` was the unknown parameter in this slot until it became a real
+    // filter. Anything still unlisted must 400 rather than being ignored, because
+    // `forbidNonWhitelisted` is what stops a typo'd filter from silently
+    // returning the unfiltered answer.
+    it('GET /api/v1/resources rejects an unknown query parameter', async () => {
       await request(app.getHttpServer())
-        .get('/api/v1/resources?type=BOOK')
+        .get('/api/v1/resources?sorts=title')
         .expect(400);
     });
+  });
+
+  describe('type, access and ordering parameters', () => {
+    it('GET /api/v1/resources?type= scopes to that type', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/resources?type=BOOK')
+        .expect(200);
+
+      const [[{ where }]] = prisma.resource.findMany.mock.calls as unknown as [
+        [{ where: unknown }],
+      ];
+      expect(where).toEqual({ type: ResourceType.BOOK });
+    });
+
+    it('GET /api/v1/resources?accessType= scopes to that access level', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/resources?accessType=FREE')
+        .expect(200);
+
+      const [[{ where }]] = prisma.resource.findMany.mock.calls as unknown as [
+        [{ where: unknown }],
+      ];
+      expect(where).toEqual({ accessType: AccessType.FREE });
+    });
+
+    it('GET /api/v1/resources combines every filter', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/resources?tag=evolution&type=BOOK&accessType=PAID')
+        .expect(200);
+
+      const [[{ where }]] = prisma.resource.findMany.mock.calls as unknown as [
+        [{ where: unknown }],
+      ];
+      expect(where).toEqual({
+        tags: { some: { slug: 'evolution' } },
+        type: ResourceType.BOOK,
+        accessType: AccessType.PAID,
+      });
+    });
+
+    it('GET /api/v1/resources defaults to newest first', async () => {
+      await request(app.getHttpServer()).get('/api/v1/resources').expect(200);
+
+      const [[{ orderBy }]] = prisma.resource.findMany.mock
+        .calls as unknown as [[{ orderBy: unknown }]];
+      expect(orderBy).toEqual([{ createdAt: 'desc' }, { id: 'desc' }]);
+    });
+
+    it.each([
+      ['oldest', [{ createdAt: 'asc' }, { id: 'asc' }]],
+      ['title', [{ title: 'asc' }, { id: 'asc' }]],
+    ])(
+      'GET /api/v1/resources?sort=%s orders accordingly',
+      async (sort, orderBy) => {
+        await request(app.getHttpServer())
+          .get(`/api/v1/resources?sort=${sort}`)
+          .expect(200);
+
+        const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
+          [{ orderBy: unknown }],
+        ];
+        expect(arg.orderBy).toEqual(orderBy);
+      },
+    );
+
+    // Relevance is the absence of `sort`, so an explicit ordering sends the
+    // request down the ordinary Prisma path with a bare-id cursor.
+    it('GET /api/v1/resources?q= with a sort pages as a plain list', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/resources?q=sapiens&sort=title')
+        .expect(200);
+
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
+        [{ orderBy: unknown }],
+      ];
+      expect(arg.orderBy).toEqual([{ title: 'asc' }, { id: 'asc' }]);
+    });
+
+    it.each([
+      '?type=BANANA',
+      '?type=book',
+      '?accessType=CHEAP',
+      '?accessType=free',
+      '?sort=sideways',
+      '?sort=most-saved',
+    ])(
+      'GET /api/v1/resources%s rejects a value outside the schema',
+      async (qs) => {
+        await request(app.getHttpServer())
+          .get(`/api/v1/resources${qs}`)
+          .expect(400);
+
+        expect(prisma.resource.findMany).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('search', () => {
@@ -1207,6 +1307,20 @@ describe('Resources (e2e)', () => {
 
       await asUser('clerk_123').get(`${queue}?order=oldest`).expect(400);
     });
+
+    // The reason the queue takes `PaginationQueryDto` rather than
+    // `ListResourcesQueryDto`. These are real filters on `GET /resources`, and if
+    // the queue accepted them it would accept, validate and then discard them —
+    // an admin narrowing a moderation queue and getting the unfiltered answer with
+    // nothing to indicate it.
+    it.each(['?type=BOOK', '?q=sapiens', '?sort=title'])(
+      'rejects the resource-list filter %s',
+      async (qs) => {
+        currentUserRole = UserRole.ADMIN;
+
+        await asUser('clerk_123').get(`${queue}${qs}`).expect(400);
+      },
+    );
   });
 
   afterEach(async () => {
