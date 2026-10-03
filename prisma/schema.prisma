@@ -200,6 +200,20 @@ model Resource {
   @@index([contributorId, createdAt(sort: Desc), id(sort: Desc)])
   @@index([createdAt])
   @@index([type, createdAt])
+  // Trigram index backing `GET /resources?q=`. The operator class is why this
+  // entry is not optional bookkeeping: `pg_trgm` has to be installed by
+  // `20261003073257_add_trgm_search`, which Prisma cannot emit for any schema,
+  // and an index Prisma does not know about reads as drift -- the next
+  // `migrate dev` would offer to drop it. Declaring it here is what makes the
+  // schema and the database agree, so that migration stays the only hand-written
+  // one and every later migration is tool-generated again.
+  //
+  // `title` only, and deliberately not `lower(title)`: the ranking queries
+  // `title` un-lowered -- ILIKE is case-insensitive and pg_trgm folds case
+  // itself -- so an index on `lower(title)` would be unusable by the expression
+  // that needs it. `why` is not indexed; it is the lowest-weighted signal and
+  // up to 5000 characters of prose.
+  @@index([title(ops: raw("gin_trgm_ops"))], type: Gin)
   // One contributor cannot post the same link twice. This is deliberately
   // *per contributor* and not global: two people independently finding the same
   // resource worth knowing is the product working, and each brings a different

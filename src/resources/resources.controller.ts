@@ -66,8 +66,9 @@ export class ResourcesController {
   @Get()
   @Public()
   @ApiOperation({
-    summary:
-      'List resources, newest first, optionally filtered by tag or by contributor username',
+    summary: 'List resources, or search them by title, tag and reason',
+    description:
+      'Without `q`, newest first and keyed on `createdAt`. With `q`, ranked by relevance and keyed on a score, so the `nextCursor` is only valid for the same query.',
   })
   @ApiOkResponse({ type: PaginatedResourcesResponseDto })
   @ApiBadRequestResponse({ description: 'Invalid query parameter or cursor' })
@@ -75,13 +76,14 @@ export class ResourcesController {
     // Read even on a public route: `@Public()` skips the guard, but Clerk's
     // middleware has still parsed the session, so a contributor browsing their
     // own anonymous posts sees them attributed.
-    return this.resourcesService.findAll(
-      query.tag,
-      query.limit,
-      query.cursor,
-      getAuth(request).userId ?? undefined,
-      query.contributor,
-    );
+    return this.resourcesService.findAll({
+      tag: query.tag,
+      limit: query.limit,
+      cursor: query.cursor,
+      contributorUsername: query.contributor,
+      q: query.q,
+      viewerId: getAuth(request).userId ?? undefined,
+    });
   }
 
   @Get(':id')

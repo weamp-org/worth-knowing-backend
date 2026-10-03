@@ -12,15 +12,21 @@ import { TagsService } from '../tags/tags.service';
 import { UserRole } from '../generated/prisma/enums';
 import {
   decodeCursor,
+  decodeRankedCursor,
   decodeReportCursor,
   encodeCursor,
+  encodeRankedCursor,
   encodeReportCursor,
   isCursorNotFound,
 } from '../pagination/cursor.util';
+import { DEFAULT_PAGE_SIZE } from '../pagination/pagination-query.dto';
 import { CreateResourceDto } from './dtos/create-resource.dto';
 import { ReportResourceDto } from './dtos/report-resource.dto';
 import { UpdateResourceDto } from './dtos/update-resource.dto';
-import { DEFAULT_PAGE_SIZE } from './dtos/list-resources-query.dto';
+import {
+  buildRankedResourceQuery,
+  type RankedResource,
+} from './resource-search';
 import {
   resourceInclude,
   resourceOrderBy,
@@ -53,6 +59,35 @@ function isUniqueViolation(error: unknown): boolean {
  */
 const DUPLICATE_MESSAGE =
   'You have already shared this link. Edit that contribution instead of posting it again.';
+
+/** Everything `GET /resources` accepts. Mirrors `ListResourcesQueryDto` plus the viewer. */
+export interface ListResourcesOptions {
+  tag?: string;
+  limit?: number;
+  cursor?: string;
+  /**
+   * Restrict to one contributor, addressed by username.
+   *
+   * A username rather than the Clerk user id, because this is a public parameter
+   * on a `@Public()` route and the id is the primary key of every account on the
+   * site — filtering by it would be an enumeration surface.
+   */
+  contributorUsername?: string;
+  /** The signed-in caller, so their own anonymous posts are not redacted from them. */
+  viewerId?: string;
+  /** Free text. Trimmed, and a blank value means "no search". */
+  q?: string;
+}
+
+/** The search half of {@link ListResourcesOptions}, once `q` has resolved to a needle. */
+interface SearchResourcesOptions {
+  needle: string;
+  take: number;
+  cursor?: { score: number; id: string };
+  viewerId?: string;
+  tag?: string;
+  contributorUsername?: string;
+}
 
 @Injectable()
 export class ResourcesService {
@@ -297,26 +332,50 @@ export class ResourcesService {
   }
 
   /**
-   * Keyset-paginated list, newest first.
+   * Keyset-paginated list.
    *
-   * `take` is one over the requested page so `hasMore` can be answered without a
-   * `COUNT(*)` on every request; the extra row is trimmed before returning.
+   * Two orderings behind one endpoint, and therefore **two cursor shapes**.
+   *
+   * - Without `q`: the ordinary feed, `(createdAt DESC, id DESC)`. The cursor is
+   *   a bare id and Prisma resolves the row's position against `orderBy`.
+   * - With `q`: relevance, `(score DESC, id DESC)`. The cursor carries the score
+   *   as well, because a computed score cannot be read back off the row it sorted.
+   *
+   * A cursor minted by one is not valid for the other, and each decoder rejects
+   * the other's shape rather than paging from an arbitrary place.
+   *
+   * An options object rather than positional arguments because this list has
+   * grown past the point where `findAll(tag, limit, cursor, viewerId,
+   * contributor, q)` is readable — three of the six are strings, two of them
+   * `string | undefined`, and only one is `number`.
    */
-  async findAll(
-    tag?: string,
-    limit?: number,
-    cursor?: string,
-    viewerId?: string,
-    /**
-     * Restrict to one contributor, addressed by username.
-     *
-     * A username rather than the Clerk user id, because this is a public
-     * parameter on a `@Public()` route and the id is the primary key of every
-     * account on the site — filtering by it would be an enumeration surface.
-     */
-    contributorUsername?: string,
-  ) {
+  async findAll({
+    tag,
+    limit,
+    cursor,
+    viewerId,
+    contributorUsername,
+    q,
+  }: ListResourcesOptions) {
     const take = limit ?? DEFAULT_PAGE_SIZE;
+
+    // A blank `q` is not a search. `?q=` and `?q=%20%20` should be the feed, not
+    // an empty page that reads as "nothing matched" — a person who cleared the box
+    // did not search for nothing, they stopped searching.
+    const needle = q?.trim() ? q.trim() : undefined;
+
+    if (needle) {
+      return this.searchResources({
+        needle,
+        take,
+        // Decoded here rather than inside the raw query so a malformed cursor is a
+        // 400 before the database is touched at all, matching the unfiltered path.
+        cursor: cursor ? decodeRankedCursor(cursor) : undefined,
+        viewerId,
+        tag,
+        contributorUsername,
+      });
+    }
 
     // `AND` rather than two ternaries into one object: tag and contributor are
     // independent, and a profile page's listing uses the contributor alone while
@@ -378,6 +437,68 @@ export class ResourcesService {
     return {
       items: items.map((row) => toResourceResponse(row, viewerId)),
       nextCursor: hasMore && last ? encodeCursor(last.id) : null,
+    };
+  }
+
+  /**
+   * Relevance-ranked search. See `resource-search.ts` for why the query is raw
+   * SQL and why it returns ids rather than rows.
+   *
+   * Note what is *absent* compared with {@link findAll}: no `isCursorNotFound`
+   * handling. This path does not use Prisma's `cursor`, so a cursor whose row was
+   * deleted while somebody was paging produces an ordinary empty or short page from
+   * the row-value comparison, which is the behaviour that case wants. There is no
+   * P2025 to catch because there is no cursor lookup to fail.
+   */
+  private async searchResources({
+    needle,
+    take,
+    cursor,
+    viewerId,
+    tag,
+    contributorUsername,
+  }: SearchResourcesOptions) {
+    const ranked = await this.prisma.$queryRaw<RankedResource[]>(
+      buildRankedResourceQuery({
+        needle,
+        take: take + 1,
+        tag,
+        contributorUsername,
+        cursor,
+      }),
+    );
+
+    const hasMore = ranked.length > take;
+    const page = hasMore ? ranked.slice(0, take) : ranked;
+    const last = page.at(-1);
+
+    // Nothing matched. Returning early also skips the second query, which would
+    // otherwise run `id IN ()` to prove there was nothing to fetch.
+    if (page.length === 0) {
+      return { items: [], nextCursor: null };
+    }
+
+    const rows = await this.prisma.resource.findMany({
+      where: { id: { in: page.map((hit) => hit.id) } },
+      include: resourceInclude,
+    });
+
+    // `findMany` hands rows back in whatever order it found them by, which is not
+    // the ranking, and `id: { in: [...] }` does not promise to preserve the
+    // array's order. So the order is rebuilt from `page`, which does.
+    //
+    // A row missing from `rows` — deleted between the two queries — is dropped
+    // rather than faked, leaving a page one short. Stopping instead would fail a
+    // search on a site whose whole premise is that people take things down.
+    const byId = new Map(rows.map((row) => [row.id, row]));
+
+    return {
+      items: page.flatMap((hit) => {
+        const row = byId.get(hit.id);
+        return row ? [toResourceResponse(row, viewerId)] : [];
+      }),
+      nextCursor:
+        hasMore && last ? encodeRankedCursor(last.score, last.id) : null,
     };
   }
 

@@ -289,7 +289,7 @@ All endpoints are prefixed with `/api/v1`.
 | `GET`    | `/tags`                                  | Public                 | Search tags                                            |
 | `PATCH`  | `/tags/:id`                              | Admin only             | Rename a tag                                           |
 | `DELETE` | `/tags/:id`                              | Admin only             | Delete an unused tag                                   |
-| `GET`    | `/resources`                             | Public                 | List resources                                         |
+| `GET`    | `/resources`                             | Public                 | List resources, or search with `?q=`                   |
 | `GET`    | `/resources/:id`                         | Public                 | One resource                                           |
 | `GET`    | `/resources/:id/mine`                    | Authenticated          | Did you contribute it                                  |
 | `POST`   | `/resources`                             | Authenticated          | Share a resource (409 if you already shared that link) |

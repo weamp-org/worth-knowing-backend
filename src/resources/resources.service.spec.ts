@@ -8,7 +8,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { Prisma } from '../generated/prisma/client';
 
 import { ResourcesService } from './resources.service';
-import { encodeCursor } from '../pagination/cursor.util';
+import { encodeCursor, encodeRankedCursor } from '../pagination/cursor.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { TagsService } from '../tags/tags.service';
 import {
@@ -44,6 +44,7 @@ describe('ResourcesService', () => {
       updateMany: jest.Mock;
     };
     user: { findUnique: jest.Mock };
+    $queryRaw: jest.Mock;
   };
 
   /**
@@ -80,6 +81,10 @@ describe('ResourcesService', () => {
               updateMany: jest.fn().mockResolvedValue({ count: 3 }),
             },
             user: { findUnique: jest.fn().mockResolvedValue(null) },
+            // Search ranks in SQL and then re-reads the rows by id, so the
+            // ranked query is a separate mock from `resource.findMany`. Default
+            // is no matches, which keeps every non-search test away from it.
+            $queryRaw: jest.fn().mockResolvedValue([]),
           },
         },
         {
@@ -248,7 +253,7 @@ describe('ResourcesService', () => {
           row({ id: 'b', isAnonymous: true }),
         ]);
 
-        const page = await service.findAll();
+        const page = await service.findAll({});
 
         expect(page.items.every((item) => item.contributorId === null)).toBe(
           true,
@@ -379,7 +384,7 @@ describe('ResourcesService', () => {
         row({ id: 'b' }),
       ]);
 
-      const page = await service.findAll();
+      const page = await service.findAll({});
 
       expect(
         page.items.every((item) => item.contributor?.profilePath === '/u/ada'),
@@ -400,7 +405,7 @@ describe('ResourcesService', () => {
     it('filters by contributor username', async () => {
       prisma.resource.findMany.mockResolvedValue([row('a')]);
 
-      await service.findAll(undefined, undefined, undefined, undefined, 'ada');
+      await service.findAll({ contributorUsername: 'ada' });
 
       expect(prisma.resource.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -415,13 +420,10 @@ describe('ResourcesService', () => {
     it('combines with a tag filter rather than replacing it', async () => {
       prisma.resource.findMany.mockResolvedValue([]);
 
-      await service.findAll(
-        'evolution',
-        undefined,
-        undefined,
-        undefined,
-        'ada',
-      );
+      await service.findAll({
+        tag: 'evolution',
+        contributorUsername: 'ada',
+      });
 
       expect(prisma.resource.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -442,7 +444,7 @@ describe('ResourcesService', () => {
     it('excludes anonymous contributions from a profile listing', async () => {
       prisma.resource.findMany.mockResolvedValue([]);
 
-      await service.findAll(undefined, undefined, undefined, undefined, 'ada');
+      await service.findAll({ contributorUsername: 'ada' });
 
       const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
         [{ where: Record<string, unknown> }],
@@ -459,7 +461,7 @@ describe('ResourcesService', () => {
     it('still shows anonymous contributions on the unfiltered feed', async () => {
       prisma.resource.findMany.mockResolvedValue([]);
 
-      await service.findAll();
+      await service.findAll({});
 
       const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
         [{ where?: Record<string, unknown> }],
@@ -471,7 +473,7 @@ describe('ResourcesService', () => {
     it('passes no where clause at all when unfiltered', async () => {
       prisma.resource.findMany.mockResolvedValue([]);
 
-      await service.findAll();
+      await service.findAll({});
 
       const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
         [{ where?: unknown }],
@@ -683,7 +685,7 @@ describe('ResourcesService', () => {
     it('orders newest first with id as a tiebreaker', async () => {
       prisma.resource.findMany.mockResolvedValue([]);
 
-      await service.findAll();
+      await service.findAll({});
 
       expect(prisma.resource.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -696,7 +698,7 @@ describe('ResourcesService', () => {
     it('filters by tag slug when given one', async () => {
       prisma.resource.findMany.mockResolvedValue([]);
 
-      await service.findAll('machine-learning');
+      await service.findAll({ tag: 'machine-learning' });
 
       expect(prisma.resource.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -708,7 +710,7 @@ describe('ResourcesService', () => {
     it('defaults to 20 and fetches one extra row to detect more', async () => {
       prisma.resource.findMany.mockResolvedValue([]);
 
-      await service.findAll();
+      await service.findAll({});
 
       expect(prisma.resource.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ take: 21 }),
@@ -718,7 +720,7 @@ describe('ResourcesService', () => {
     it('honours an explicit limit', async () => {
       prisma.resource.findMany.mockResolvedValue([]);
 
-      await service.findAll(undefined, 5);
+      await service.findAll({ limit: 5 });
 
       expect(prisma.resource.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ take: 6 }),
@@ -732,7 +734,7 @@ describe('ResourcesService', () => {
         row('c'),
       ]);
 
-      const result = await service.findAll(undefined, 2);
+      const result = await service.findAll({ limit: 2 });
 
       expect(result.items.map((r) => r.id)).toEqual(['a', 'b']);
       expect(result.nextCursor).toBe(encodeCursor('b'));
@@ -741,7 +743,7 @@ describe('ResourcesService', () => {
     it('returns a null cursor on the last page', async () => {
       prisma.resource.findMany.mockResolvedValue([row('a'), row('b')]);
 
-      const result = await service.findAll(undefined, 2);
+      const result = await service.findAll({ limit: 2 });
 
       expect(result.items).toHaveLength(2);
       expect(result.nextCursor).toBeNull();
@@ -750,7 +752,7 @@ describe('ResourcesService', () => {
     it('handles an empty page without inventing a cursor', async () => {
       prisma.resource.findMany.mockResolvedValue([]);
 
-      const result = await service.findAll();
+      const result = await service.findAll({});
 
       expect(result).toEqual({ items: [], nextCursor: null });
     });
@@ -758,7 +760,7 @@ describe('ResourcesService', () => {
     it('passes a decoded cursor to prisma and skips the cursor row', async () => {
       prisma.resource.findMany.mockResolvedValue([]);
 
-      await service.findAll(undefined, 20, encodeCursor('ckq8f2'));
+      await service.findAll({ limit: 20, cursor: encodeCursor('ckq8f2') });
 
       expect(prisma.resource.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ cursor: { id: 'ckq8f2' }, skip: 1 }),
@@ -768,7 +770,7 @@ describe('ResourcesService', () => {
     it('omits the cursor clause on the first page', async () => {
       prisma.resource.findMany.mockResolvedValue([]);
 
-      await service.findAll();
+      await service.findAll({});
 
       const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
         [Record<string, unknown>],
@@ -780,7 +782,7 @@ describe('ResourcesService', () => {
     it('rejects a malformed cursor before hitting the database', async () => {
       const cursor = Buffer.from("' OR 1=1 --", 'utf8').toString('base64url');
 
-      await expect(service.findAll(undefined, 20, cursor)).rejects.toThrow(
+      await expect(service.findAll({ limit: 20, cursor })).rejects.toThrow(
         BadRequestException,
       );
       expect(prisma.resource.findMany).not.toHaveBeenCalled();
@@ -795,7 +797,7 @@ describe('ResourcesService', () => {
       );
 
       await expect(
-        service.findAll(undefined, 20, encodeCursor('ckq8f2')),
+        service.findAll({ limit: 20, cursor: encodeCursor('ckq8f2') }),
       ).rejects.toThrow(BadRequestException);
     });
 
@@ -806,7 +808,239 @@ describe('ResourcesService', () => {
       });
       prisma.resource.findMany.mockRejectedValue(boom);
 
-      await expect(service.findAll()).rejects.toBe(boom);
+      await expect(service.findAll({})).rejects.toBe(boom);
+    });
+  });
+
+  describe('search', () => {
+    // A resource row as the rehydration step sees it. Every row goes through
+    // `toResourceResponse`, so `_count` is not optional here either.
+    const row = (id: string) => ({
+      id,
+      contributorId: 'user_1',
+      contributor: null,
+      isAnonymous: false,
+      tags: [],
+      _count: { savedResources: 0 },
+    });
+
+    const ranked = (...hits: [string, number][]) =>
+      hits.map(([id, score]) => ({ id, score }));
+
+    /**
+     * The SQL Prisma was handed, flattened to a string.
+     *
+     * `$queryRaw` receives a `Prisma.Sql`, and asserting on the generated text is
+     * the only way to check what the ranking query actually does — that it
+     * excludes anonymous rows under a contributor filter, that it pages on
+     * `(score, id)`. These are assertions about a query, not about behaviour, and
+     * they are here because the alternative is a bug in the anonymity rule that no
+     * mocked test can see.
+     */
+    const rawSql = (): string => {
+      const [[query]] = prisma.$queryRaw.mock.calls as unknown as [
+        [{ text: string }],
+      ];
+      return query.text.replace(/\s+/g, ' ');
+    };
+
+    /**
+     * `expect.arrayContaining` is typed `any`, which trips `no-unsafe-assignment`
+     * the moment it is assigned to an object property. Same reason the file's
+     * `dataContaining` helper exists for the outer object.
+     */
+    const valuesContaining = (...values: unknown[]) =>
+      expect.arrayContaining(values) as unknown as unknown[];
+
+    it('ranks in SQL and returns the rows in rank order', async () => {
+      prisma.$queryRaw.mockResolvedValue(ranked(['b', 100], ['a', 60]));
+      // Deliberately the *reverse* of the ranking: `id: { in: [...] }` makes no
+      // promise about order, so the service has to impose it.
+      prisma.resource.findMany.mockResolvedValue([row('a'), row('b')]);
+
+      const result = await service.findAll({ q: 'sapiens' });
+
+      expect(result.items.map((item) => item.id)).toEqual(['b', 'a']);
+    });
+
+    it('re-reads exactly the ids the ranking returned', async () => {
+      prisma.$queryRaw.mockResolvedValue(ranked(['b', 100], ['a', 60]));
+      prisma.resource.findMany.mockResolvedValue([row('a'), row('b')]);
+
+      await service.findAll({ q: 'sapiens' });
+
+      expect(prisma.resource.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: { in: ['b', 'a'] } } }),
+      );
+    });
+
+    // The rehydration step exists so `toResourceResponse` stays the only copy of
+    // the anonymity rule. A search returning an unattributed contribution to a
+    // stranger is the exact failure this shape prevents.
+    it('runs every row through the shared redaction', async () => {
+      prisma.$queryRaw.mockResolvedValue(ranked(['a', 100], ['b', 60]));
+      prisma.resource.findMany.mockResolvedValue([
+        row('a'),
+        { ...row('a'), id: 'b', isAnonymous: true },
+      ]);
+
+      const result = await service.findAll({ q: 'sapiens' });
+
+      expect(result.items.map((item) => item.contributorId)).toEqual([
+        'user_1',
+        null,
+      ]);
+    });
+
+    it('does not run a second query when nothing matched', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+
+      const result = await service.findAll({ q: 'nothing at all' });
+
+      expect(result).toEqual({ items: [], nextCursor: null });
+      expect(prisma.resource.findMany).not.toHaveBeenCalled();
+    });
+
+    // A row deleted between ranking and rehydration leaves a short page rather
+    // than a 500. People deleting things is the site working, not an error.
+    it('drops a row that vanished between the two queries', async () => {
+      prisma.$queryRaw.mockResolvedValue(ranked(['a', 100], ['b', 60]));
+      prisma.resource.findMany.mockResolvedValue([row('a')]);
+
+      const result = await service.findAll({ q: 'sapiens' });
+
+      expect(result.items.map((item) => item.id)).toEqual(['a']);
+      expect(result.nextCursor).toBeNull();
+    });
+
+    it('returns a cursor carrying the score as well as the id', async () => {
+      prisma.$queryRaw.mockResolvedValue(
+        ranked(['a', 100], ['b', 60], ['c', 20]),
+      );
+      prisma.resource.findMany.mockResolvedValue([
+        row('a'),
+        row('b'),
+        row('c'),
+      ]);
+
+      const result = await service.findAll({ q: 'sapiens', limit: 2 });
+
+      expect(result.items.map((item) => item.id)).toEqual(['a', 'b']);
+      // The score of the last *returned* row, not of the extra one fetched to
+      // detect that more exist.
+      expect(result.nextCursor).toBe(encodeRankedCursor(60, 'b'));
+    });
+
+    it('returns a null cursor on the last page', async () => {
+      prisma.$queryRaw.mockResolvedValue(ranked(['a', 100]));
+      prisma.resource.findMany.mockResolvedValue([row('a')]);
+
+      const result = await service.findAll({ q: 'sapiens' });
+
+      expect(result.nextCursor).toBeNull();
+    });
+
+    it('pages on the score and the id together', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll({
+        q: 'sapiens',
+        cursor: encodeRankedCursor(60, 'ckq8f2'),
+      });
+
+      // The raw query receives values as bound parameters, so the decoded cursor
+      // has to reach it — and the resumed comparison has to be row-value, or a
+      // page boundary either repeats or skips rows.
+      expect(rawSql()).toContain('("score", "id") < ($');
+      expect(prisma.$queryRaw).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // The whole bound-parameter list, so an exact match would be brittle:
+          // the scoring terms bind several values each.
+          values: valuesContaining(60, 'ckq8f2'),
+        }),
+      );
+    });
+
+    it('rejects a malformed cursor before hitting the database', async () => {
+      const cursor = Buffer.from('not-a-cursor', 'utf8').toString('base64url');
+
+      await expect(service.findAll({ q: 'sapiens', cursor })).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    // A feed cursor is a bare id. Resuming a relevance ranking from one would
+    // page from a position nobody defined.
+    it('rejects a feed cursor on a search request', async () => {
+      await expect(
+        service.findAll({ q: 'sapiens', cursor: encodeCursor('ckq8f2') }),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    // `?q=` and `?q=%20` are somebody clearing the box, not somebody searching
+    // for nothing. Falling through to the feed means the box and the feed cannot
+    // disagree about what is being shown.
+    it.each([
+      ['', 'empty'],
+      ['   ', 'whitespace'],
+    ])('treats a %s q as no search at all', async (q) => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll({ q });
+
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      expect(prisma.resource.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        }),
+      );
+    });
+
+    it('trims the query before ranking on it', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll({ q: '  sapiens  ' });
+
+      expect(prisma.$queryRaw).toHaveBeenCalledWith(
+        expect.objectContaining({ values: valuesContaining('sapiens') }),
+      );
+    });
+
+    it('narrows the ranking to a tag', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+
+      await service.findAll({ q: 'sapiens', tag: 'evolution' });
+
+      expect(rawSql()).toContain('t."slug" = $');
+      expect(prisma.$queryRaw).toHaveBeenCalledWith(
+        expect.objectContaining({ values: valuesContaining('evolution') }),
+      );
+    });
+
+    // The same anonymity rule as the unfiltered Prisma path, expressed in SQL
+    // because a `ResourceWhereInput` cannot become a SQL fragment. This is the
+    // assertion that keeps the two copies of the rule from drifting apart.
+    it('excludes anonymous rows when narrowing to one contributor', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+
+      await service.findAll({ q: 'sapiens', contributorUsername: 'ada' });
+
+      expect(rawSql()).toContain('r."isAnonymous" = false');
+      expect(rawSql()).toContain('u."usernameLower" = $');
+    });
+
+    // And its converse: a search over everything is the global corpus, where an
+    // anonymous post is public content that merely happens to be unattributed.
+    it('leaves anonymous rows searchable when no contributor filter is given', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+
+      await service.findAll({ q: 'sapiens' });
+
+      expect(rawSql()).not.toContain('r."isAnonymous" = false');
     });
   });
 

@@ -40,6 +40,7 @@ describe('Resources (e2e)', () => {
       findMany: jest.Mock;
       updateMany: jest.Mock;
     };
+    $queryRaw: jest.Mock;
   };
   let currentUserRole: UserRole;
 
@@ -143,6 +144,10 @@ describe('Resources (e2e)', () => {
             },
           ]),
         },
+        // Search ranks in SQL and re-reads the hits by id. No matches by
+        // default, so a `?q=` request resolves to an empty page rather than
+        // reaching into whatever the next test set up.
+        $queryRaw: jest.fn().mockResolvedValue([]),
       })
       .compile();
 
@@ -816,6 +821,116 @@ describe('Resources (e2e)', () => {
       await request(app.getHttpServer())
         .get('/api/v1/resources?type=BOOK')
         .expect(400);
+    });
+  });
+
+  describe('search', () => {
+    /**
+     * `expect.arrayContaining` is typed `any`, which trips `no-unsafe-assignment`
+     * as soon as it is assigned to an object property — the same reason
+     * {@link dataContaining} above exists for the outer object.
+     */
+    const valuesContaining = (...values: unknown[]) =>
+      expect.arrayContaining(values) as unknown as unknown[];
+
+    it('GET /api/v1/resources?q= ranks through the raw query, not findMany', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/resources?q=sapiens')
+        .expect(200)
+        .expect({ items: [], nextCursor: null });
+
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+      // Nothing was ranked, so there is nothing to re-read.
+      expect(prisma.resource.findMany).not.toHaveBeenCalled();
+    });
+
+    it('GET /api/v1/resources?q= re-reads the ranked ids', async () => {
+      prisma.$queryRaw.mockResolvedValueOnce([
+        { id: 'res_1', score: 100 },
+        { id: 'res_2', score: 60 },
+      ]);
+      prisma.resource.findMany.mockResolvedValueOnce([
+        {
+          id: 'res_2',
+          ...validBody,
+          contributor: null,
+          isAnonymous: false,
+          tags: [],
+          _count: { savedResources: 0, comments: 0 },
+        },
+        {
+          id: 'res_1',
+          ...validBody,
+          title: 'Other',
+          contributor: null,
+          isAnonymous: false,
+          tags: [],
+          _count: { savedResources: 0, comments: 0 },
+        },
+      ]);
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/resources?q=sapiens')
+        .expect(200);
+
+      expect(response.body).toMatchObject({
+        items: [{ id: 'res_1' }, { id: 'res_2' }],
+      });
+      expect(prisma.resource.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: { in: ['res_1', 'res_2'] } } }),
+      );
+    });
+
+    // Clearing the box is not searching for nothing. Falling through to the feed
+    // means the empty input and the empty result can never disagree.
+    it('GET /api/v1/resources?q= treats a blank query as no search', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/resources?q=')
+        .expect(200)
+        .expect({ items: [], nextCursor: null });
+
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      expect(prisma.resource.findMany).toHaveBeenCalled();
+    });
+
+    it('GET /api/v1/resources?q= trims before ranking', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/resources?q=%20%20sapiens%20%20')
+        .expect(200);
+
+      expect(prisma.$queryRaw).toHaveBeenCalledWith(
+        expect.objectContaining({ values: valuesContaining('sapiens') }),
+      );
+    });
+
+    it('GET /api/v1/resources?q= rejects an over-long query', async () => {
+      await request(app.getHttpServer())
+        .get(`/api/v1/resources?q=${'a'.repeat(101)}`)
+        .expect(400);
+
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    it('GET /api/v1/resources?q= combines with a tag filter', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/resources?q=sapiens&tag=machine-learning')
+        .expect(200);
+
+      expect(prisma.$queryRaw).toHaveBeenCalledWith(
+        expect.objectContaining({
+          values: valuesContaining('machine-learning'),
+        }),
+      );
+    });
+
+    it('GET /api/v1/resources?q= rejects a feed cursor', async () => {
+      await request(app.getHttpServer())
+        .get(
+          `/api/v1/resources?q=sapiens&cursor=${Buffer.from('ckq8f2').toString('base64url')}`,
+        )
+        .expect(400);
+
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
     });
   });
 

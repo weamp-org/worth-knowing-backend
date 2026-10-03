@@ -1,27 +1,26 @@
 import { Transform } from 'class-transformer';
-import {
-  IsInt,
-  IsOptional,
-  IsString,
-  Matches,
-  Max,
-  MaxLength,
-  Min,
-} from 'class-validator';
+import { IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 
+import { PaginationQueryDto } from '../../pagination/pagination-query.dto';
 import { TAG_SLUG_MAX_LENGTH } from '../../tags/slugify.util';
 import {
   USERNAME_MAX_LENGTH,
   normalizeUsername,
 } from '../../users/username.util';
 
-/** Page size when the client does not ask for one. */
-export const DEFAULT_PAGE_SIZE = 20;
+/**
+ * Longest `q` accepted.
+ *
+ * Not derived from any column: `title` is 200 characters and `why` is 5000, so a
+ * bound taken from either would admit a needle that is not a search anybody typed.
+ * A trigram comparison also gets slower as the needle grows — `word_similarity`
+ * scores the query against every trigram window of the haystack, so cost grows with
+ * the product of the two lengths — which makes an unbounded `q` a cheap way to make
+ * an expensive query. 100 characters is far beyond any real search term.
+ */
+export const SEARCH_QUERY_MAX_LENGTH = 100;
 
-/** Hard ceiling on `limit`, so one request cannot ask for the whole table. */
-export const MAX_PAGE_SIZE = 100;
-
-export class ListResourcesQueryDto {
+export class ListResourcesQueryDto extends PaginationQueryDto {
   /** Filter to a single tag, by slug as returned from `GET /api/v1/tags`.
    * @example 'machine-learning'
    */
@@ -61,18 +60,26 @@ export class ListResourcesQueryDto {
   )
   contributor?: string;
 
-  /** How many resources to return.
-   * @example 20
+  /**
+   * Free-text search over titles, tags and `why`, best match first.
+   *
+   * Trimmed here so that a service or a test calling this path directly gets the
+   * same value a controller would. An empty result is **not** a search — see
+   * {@link ResourcesService.findAll}, which treats a blank `q` as absent and
+   * returns the ordinary feed, so `?q=` behaves like `/` rather than like a
+   * search for nothing.
+   *
+   * The response shape and the cursor are otherwise identical to an unfiltered
+   * list, but the cursor means something different: relevance order is not
+   * `(createdAt, id)`, so it carries a score alongside the id. A cursor from an
+   * unfiltered page is not valid here and vice versa.
+   * @example 'machine learning'
    */
   @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Max(MAX_PAGE_SIZE)
-  limit?: number;
-
-  /** Opaque cursor from a previous response's `nextCursor`. Omit for the first page. */
-  @IsOptional()
   @IsString()
-  @MaxLength(200)
-  cursor?: string;
+  @MaxLength(SEARCH_QUERY_MAX_LENGTH)
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  q?: string;
 }

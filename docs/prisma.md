@@ -235,6 +235,87 @@ pinning cuid's alphabet — a format-specific regex would silently break if the
 id generator ever changed. Prisma parameterises the query, so the check is input
 sanity, not an injection guard.
 
+### Search
+
+`GET /api/v1/resources?q=` searches titles, tags and `why`, and returns the same
+shape. It is the **only** text search over resources and it changes the ordering,
+which changes what a cursor means.
+
+**Ordering is `(score DESC, id DESC)`, and the cursor carries both.** A bare id
+is enough for the feed because `createdAt` can be read off the row; a relevance
+score is computed, so it cannot. This is the same objection `docs/saved.md`
+raises against sorting by saved count. The score is banded into integers so the
+cursor compares exactly rather than by float equality:
+
+| Band | Signal                                          |
+| ---- | ----------------------------------------------- |
+| 100  | `title` is exactly the query                    |
+| 80   | `title` starts with the query                   |
+| 70   | a tag is named exactly by the query             |
+| 60   | the query is inside `title`                     |
+| 40   | `title` is within trigram distance of the query |
+| 20   | the query is inside `why`                       |
+
+Bands are additive, so a title that is exact _and_ a prefix _and_ a substring
+scores 240. That is intended — the bands express how much was matched, and the
+ordering only cares about the total.
+
+- `?q=` blank or whitespace is **not** a search. It falls through to the
+  unfiltered feed, so `?q=` and `/` cannot disagree about what is being shown.
+- A feed cursor is rejected on a search request and vice versa. Both decoders
+  reject the other's shape rather than paging from an undefined position.
+- `?q=` is capped at 100 characters. Trigram comparison cost grows with the
+  product of the needle and haystack lengths, so an unbounded `q` is a cheap way
+  to make an expensive query.
+- Tag and contributor filters apply to search as well. Under a contributor
+  filter, anonymous resources are excluded — the same rule as the feed, for the
+  same reason. `resource-search.ts` states it in SQL because a
+  `Prisma.ResourceWhereInput` cannot become a SQL fragment.
+
+**Why the query is raw SQL.** Prisma's `orderBy` takes columns and relation
+aggregates, not arbitrary expressions, so there is no query-builder spelling of
+"order by how well this row matched". The alternative — fetch everything that
+matched and sort in JavaScript — is unbounded, which this API never is.
+
+**Why it returns ids only.** The ranked query selects `id` and `score`, and the
+rows are then re-read through Prisma with the ordinary `resourceInclude` and
+passed through `toResourceResponse`. Doing it in one step means writing the
+contributor join, the anonymity rule and display-name resolution a second time in
+SQL — and the anonymity rule is exactly the thing that must exist once. Two round
+trips at a page size of 20–100 is not a cost worth trading a correctness
+guarantee for.
+
+LIKE metacharacters in `q` are escaped, so `?q=50%` searches for a literal `50%`
+rather than matching `50` followed by anything.
+
+### The trigram index
+
+`pg_trgm` and `Resource_title_idx` come from
+`20261003073257_add_trgm_search`, which is **the one hand-written migration in
+`prisma/migrations/`**. Prisma cannot emit it for any schema: the
+`postgresqlExtensions` preview feature was deprecated in Prisma 6.16.0, and the
+schema language cannot express a `CREATE EXTENSION` or an operator-class index.
+Prisma's own v7 documentation prescribes `migrate dev --create-only`, edit the
+generated file, `migrate deploy` — which is what that migration is. It entered
+the history through the tool, so drift detection and shadow-database validation
+apply from it onward.
+
+The index is **declared in `schema.prisma`** as
+`@@index([title(ops: raw("gin_trgm_ops"))], type: Gin)`, and that declaration is
+load-bearing rather than bookkeeping. An index Prisma does not know about reads
+as drift: the next `migrate dev` sees a database index the schema does not
+describe and offers to drop it. Declaring it is what keeps the two in step.
+
+The index is on `title` and deliberately **not** `lower(title)`: the ranking
+queries `title` un-lowered, since `ILIKE` is case-insensitive and pg_trgm folds
+case itself, and an index on `lower(title)` would be unusable by the expression
+that needs it. `why` is not indexed — it is the lowest band, and it is up to 5000
+characters of prose.
+
+Note this repo uses `migrate dev`, not `db push`. `db push` reads only the
+schema and cannot install extensions, which is one of the reasons Prisma
+deprecated the schema-side flag.
+
 ### Tags
 
 `Resource.tags` is a Prisma **implicit** many-to-many, so Prisma owns the
@@ -523,10 +604,12 @@ not index-backed, which is fine while the vocabulary is small.
   update) is required eventually, or the vocabulary degrades irreversibly.
 - **Tag landing pages.** `GET /api/v1/tags/:name` does not exist yet. Nothing
   in the current read path depends on it.
-- **Search indexing.** If the tag table grows enough for `contains` to matter, a
-  GIN trigram index needs `pg_trgm`, which Prisma cannot express — it has to be
-  hand-written into a migration. The same applies to full-text search over
-  `Resource.title` and `Resource.why`.
+- **Full-text search over `why`.** Resource search is trigram-based, which
+  forgives typos but does not understand stemming or word order. Postgres full
+  text (`tsvector`) would rank a multi-word query better; it is not built
+  because it needs a generated column or expression index, and nothing measured
+  yet says the ranking needs it. The tag `contains` filter below is also still
+  un-indexed, which is fine while the vocabulary is small.
 
 ### Schema changes
 

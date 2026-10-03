@@ -140,3 +140,53 @@ export function encodeReportCursor(
 ): string {
   return encodeCursor(`${targetId}:${reporterId}`);
 }
+
+/**
+ * Decodes a search cursor into the `(score, id)` pair it pages over.
+ *
+ * Search is the one ordering here that is **computed** rather than read off a
+ * column, so a bare id is not enough — the same objection `docs/saved.md` raises
+ * against sorting by saved count. The score has to travel with the id or the
+ * database has no way to know where in the ranking to resume.
+ *
+ * `score:id`, in the same order as the `ORDER BY score DESC, id DESC` that produced
+ * it, so the halves are named for what they point at. Encoded through
+ * {@link decodeCursor}, which brings the base64 and character checks with it.
+ *
+ * The score is required to be a non-negative **integer**, which is a real
+ * constraint rather than tidiness: `resources/resource-search.ts` scores in whole
+ * bands, and rejecting a fractional score here means a cursor minted by an older
+ * or newer scoring formula is refused outright instead of silently paging from the
+ * wrong place.
+ *
+ * @throws BadRequestException when the cursor does not decode to a score and an id
+ */
+export function decodeRankedCursor(cursor: string): {
+  score: number;
+  id: string;
+} {
+  const decoded = decodeCursor(cursor);
+  const separator = decoded.indexOf(':');
+
+  // Same reasoning as the report cursor: both halves must be present, and nothing
+  // past that point is worth defending. A ranked cursor that decodes but names a
+  // row that no longer exists yields an empty page, which is the behaviour a
+  // resource deleted mid-search should produce.
+  if (separator <= 0 || separator === decoded.length - 1) {
+    throw new BadRequestException('Invalid cursor');
+  }
+
+  const score = Number(decoded.slice(0, separator));
+  const id = decoded.slice(separator + 1);
+
+  if (!Number.isInteger(score) || score < 0) {
+    throw new BadRequestException('Invalid cursor');
+  }
+
+  return { score, id };
+}
+
+/** Encodes a search cursor. The inverse of {@link decodeRankedCursor}. */
+export function encodeRankedCursor(score: number, id: string): string {
+  return encodeCursor(`${score}:${id}`);
+}

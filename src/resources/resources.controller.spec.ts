@@ -86,6 +86,8 @@ describe('ResourcesController', () => {
   });
 
   describe('findAll', () => {
+    // One options object rather than positional arguments: `q` was the sixth
+    // parameter, and at that point the signature was unreadable.
     it('forwards every filter, the pagination arguments and the viewer', async () => {
       await controller.findAll(
         {
@@ -93,29 +95,32 @@ describe('ResourcesController', () => {
           limit: 10,
           cursor: 'Y2tz',
           contributor: 'adal',
+          q: 'sapiens',
         },
         request,
       );
 
-      expect(mockResourcesService.findAll).toHaveBeenCalledWith(
-        'machine-learning',
-        10,
-        'Y2tz',
-        'user_1',
-        'adal',
-      );
+      expect(mockResourcesService.findAll).toHaveBeenCalledWith({
+        tag: 'machine-learning',
+        limit: 10,
+        cursor: 'Y2tz',
+        contributorUsername: 'adal',
+        q: 'sapiens',
+        viewerId: 'user_1',
+      });
     });
 
     it('passes undefined for absent query parameters', async () => {
       await controller.findAll({}, request);
 
-      expect(mockResourcesService.findAll).toHaveBeenCalledWith(
-        undefined,
-        undefined,
-        undefined,
-        'user_1',
-        undefined,
-      );
+      expect(mockResourcesService.findAll).toHaveBeenCalledWith({
+        tag: undefined,
+        limit: undefined,
+        cursor: undefined,
+        contributorUsername: undefined,
+        q: undefined,
+        viewerId: 'user_1',
+      });
     });
 
     it('forwards no viewer when the request is signed out', async () => {
@@ -123,13 +128,14 @@ describe('ResourcesController', () => {
 
       await controller.findAll({}, request);
 
-      expect(mockResourcesService.findAll).toHaveBeenCalledWith(
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-      );
+      expect(mockResourcesService.findAll).toHaveBeenCalledWith({
+        tag: undefined,
+        limit: undefined,
+        cursor: undefined,
+        contributorUsername: undefined,
+        q: undefined,
+        viewerId: undefined,
+      });
     });
   });
 

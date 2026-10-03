@@ -18,8 +18,8 @@ import {
 } from '@nestjs/swagger';
 
 import { ResourcesService } from './resources.service';
-import { ListResourcesQueryDto } from './dtos/list-resources-query.dto';
 import { PaginatedResourceReportsResponseDto } from './dtos/resource-response.dto';
+import { PaginationQueryDto } from '../pagination/pagination-query.dto';
 import { ClerkAuthGuard } from '../clerk-auth/clerk-auth.guard';
 import { RolesGuard } from '../roles/roles.guard';
 import { Roles } from '../roles/roles.decorator';
@@ -50,6 +50,12 @@ export class ResourceReportsController {
    * Admin only, via `@Roles` — the one case the decorator can state, since there is
    * no owner-of-the-queue alternative for a non-admin to be. Reporting itself needs
    * no privilege at all; that is the point of it.
+   *
+   * Takes {@link PaginationQueryDto} rather than `ListResourcesQueryDto` even though
+   * this controller used to take the latter. Only a page size and a cursor mean
+   * anything on a moderation queue, and `forbidNonWhitelisted` would otherwise make
+   * `?q=` validate here and then be quietly dropped — an admin narrowing the queue
+   * by a search term and getting the unfiltered answer with no indication of it.
    */
   @Get()
   @Roles(UserRole.ADMIN)
@@ -63,7 +69,7 @@ export class ResourceReportsController {
   @ApiBadRequestResponse({ description: 'Invalid query parameter or cursor' })
   @ApiUnauthorizedResponse({ description: 'No valid Clerk session' })
   @ApiForbiddenResponse({ description: 'Caller is not an admin' })
-  findAll(@Query() query: ListResourcesQueryDto) {
+  findAll(@Query() query: PaginationQueryDto) {
     return this.resourcesService.listResourceReports(query.limit, query.cursor);
   }
 
