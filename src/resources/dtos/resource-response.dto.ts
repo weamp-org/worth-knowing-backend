@@ -1,3 +1,5 @@
+import { ApiProperty } from '@nestjs/swagger';
+
 import {
   AccessType,
   ResourceReportReason,
@@ -120,6 +122,33 @@ export class ResourceResponseDto {
   commentCount: number;
 }
 
+/**
+ * How many resources match, per filterable facet.
+ *
+ * Every enum member is present, including the ones with no matches — a facet at
+ * zero is a real answer, and omitting it would make an option disappear exactly
+ * when someone is deciding whether it is worth clicking.
+ *
+ * **Each facet's counts ignore that facet's own filter.** With `type=BOOK` active,
+ * `byType.ARTICLE` counts articles matching the rest of the query, not `(0)`. A
+ * self-excluding count would be true, would answer nothing, and would make the
+ * dropdown useless precisely when it is being used to change its mind.
+ */
+export class ResourceFacetsDto {
+  @ApiProperty({
+    description: 'Resources per type, excluding the `type` filter itself.',
+    example: { BOOK: 4, ARTICLE: 0, COURSE: 2 },
+  })
+  byType: Record<ResourceType, number>;
+
+  @ApiProperty({
+    description:
+      'Resources per access level, excluding the `accessType` filter.',
+    example: { FREE: 5, PAID: 1, FREEMIUM: 0, UNKNOWN: 0 },
+  })
+  byAccessType: Record<AccessType, number>;
+}
+
 /** One page of `GET /api/v1/resources`. */
 export class PaginatedResourcesResponseDto {
   items: ResourceResponseDto[];
@@ -128,6 +157,21 @@ export class PaginatedResourcesResponseDto {
    * @example 'Y2tpZGEyYjM0'
    */
   nextCursor: string | null;
+
+  /**
+   * Counts for the filter dropdowns, in the same response as the page they describe.
+   *
+   * Deliberately not a separate endpoint. A count and the list beside it have to be
+   * true of the same moment, and two requests could straddle a save or a delete and
+   * disagree — leaving a dropdown promising four books above a list showing three,
+   * with no way for a reader to tell which is lying.
+   *
+   * Present on every page, not only the first: `ResourceFeed` re-sends the filters
+   * on "Load more", and a count that only existed on page one would have to be
+   * carried in client state — which is the copy that can fall out of step.
+   */
+  @ApiProperty({ type: ResourceFacetsDto })
+  facets: ResourceFacetsDto;
 }
 
 /**

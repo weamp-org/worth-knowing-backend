@@ -167,12 +167,49 @@ describe('Resources (e2e)', () => {
     await app.init();
   });
 
+  /**
+   * Every enum member at zero.
+   *
+   * The shape a listing carries when the mocked `$queryRaw` returns no grouped
+   * rows, which is the default for every test here. Built from the enums rather than
+   * written out so a new `ResourceType` or `AccessType` makes these expectations
+   * fail loudly instead of passing against a stale literal.
+   */
+  /*
+   * The ranking query, told apart from the facet query.
+   *
+   * The facet counts run on *every* listing, so "`$queryRaw` was not called" is no
+   * longer evidence that relevance did not engage — an assertion written that way
+   * would now pass for entirely the wrong reason, which is worse than failing. These
+   * live out here rather than in the `search` block because the ordering block
+   * asserts on them too: `?q=…&sort=title` must not rank.
+   */
+  const rawQueries = (): { text: string; values: unknown[] }[] =>
+    (
+      prisma.$queryRaw.mock.calls as unknown as [
+        { text: string; values: unknown[] },
+      ][]
+    ).map(([query]) => query);
+
+  const rankedQueryCount = (): number =>
+    rawQueries().filter((query) => query.text.includes('ORDER BY "score"'))
+      .length;
+
+  const zeroFacets = () => ({
+    byType: Object.fromEntries(
+      Object.values(ResourceType).map((value) => [value, 0]),
+    ),
+    byAccessType: Object.fromEntries(
+      Object.values(AccessType).map((value) => [value, 0]),
+    ),
+  });
+
   describe('public reads', () => {
     it('GET /api/v1/resources', () => {
       return request(app.getHttpServer())
         .get('/api/v1/resources')
         .expect(200)
-        .expect({ items: [], nextCursor: null });
+        .expect({ items: [], nextCursor: null, facets: zeroFacets() });
     });
 
     it('GET /api/v1/resources/:id returns 404 when missing', () => {
@@ -898,7 +935,9 @@ describe('Resources (e2e)', () => {
         .get('/api/v1/resources?q=sapiens&sort=title')
         .expect(200);
 
-      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      // An explicit sort overrides relevance, so the *ranking* query must not run.
+      // The facet query runs regardless, so this is not "no raw query at all".
+      expect(rankedQueryCount()).toBe(0);
       const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
         [{ orderBy: unknown }],
       ];
@@ -933,22 +972,49 @@ describe('Resources (e2e)', () => {
     const valuesContaining = (...values: unknown[]) =>
       expect.arrayContaining(values) as unknown as unknown[];
 
+    /**
+     * The ranking query, told apart from the facet query.
+     *
+     * Declared up here rather than in the `search` block because the ordering block
+     * asserts on it too — `?q=…&sort=title` must not rank, and that is now a claim
+     * about which raw query ran rather than about whether `$queryRaw` ran at all.
+     */
+    const rawQueries = (): { text: string; values: unknown[] }[] =>
+      (
+        prisma.$queryRaw.mock.calls as unknown as [
+          { text: string; values: unknown[] },
+        ][]
+      ).map(([query]) => query);
+
+    const rankedQuery = (): { text: string; values: unknown[] } | undefined =>
+      rawQueries().find((query) => query.text.includes('ORDER BY "score"'));
+
     it('GET /api/v1/resources?q= ranks through the raw query, not findMany', async () => {
       await request(app.getHttpServer())
         .get('/api/v1/resources?q=sapiens')
         .expect(200)
-        .expect({ items: [], nextCursor: null });
+        .expect({ items: [], nextCursor: null, facets: zeroFacets() });
 
-      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+      // Two raw queries, not one: the ranking and the facet counts. Asserting a bare
+      // `toHaveBeenCalledTimes` here would have been a count of whichever queries
+      // happened to exist, and would have needed editing for the wrong reason later.
+      expect(rankedQueryCount()).toBe(1);
       // Nothing was ranked, so there is nothing to re-read.
       expect(prisma.resource.findMany).not.toHaveBeenCalled();
     });
 
     it('GET /api/v1/resources?q= re-reads the ranked ids', async () => {
-      prisma.$queryRaw.mockResolvedValueOnce([
-        { id: 'res_1', score: 100 },
-        { id: 'res_2', score: 60 },
-      ]);
+      // Discriminated by query rather than `mockResolvedValueOnce`: the facet query
+      // now runs first, so a positional one-shot would hand the ranked hits to the
+      // counts and leave the ranking empty.
+      prisma.$queryRaw.mockImplementation((query: { text: string }) =>
+        query.text.includes('ORDER BY "score"')
+          ? [
+              { id: 'res_1', score: 100 },
+              { id: 'res_2', score: 60 },
+            ]
+          : [],
+      );
       prisma.resource.findMany.mockResolvedValueOnce([
         {
           id: 'res_2',
@@ -987,9 +1053,11 @@ describe('Resources (e2e)', () => {
       await request(app.getHttpServer())
         .get('/api/v1/resources?q=')
         .expect(200)
-        .expect({ items: [], nextCursor: null });
+        .expect({ items: [], nextCursor: null, facets: zeroFacets() });
 
-      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      // Relevance must not engage, so no *ranking* query ran. The facet query runs
+      // on every listing, which is why this is not "no raw query at all".
+      expect(rankedQueryCount()).toBe(0);
       expect(prisma.resource.findMany).toHaveBeenCalled();
     });
 
@@ -998,7 +1066,7 @@ describe('Resources (e2e)', () => {
         .get('/api/v1/resources?q=%20%20sapiens%20%20')
         .expect(200);
 
-      expect(prisma.$queryRaw).toHaveBeenCalledWith(
+      expect(rankedQuery()).toEqual(
         expect.objectContaining({ values: valuesContaining('sapiens') }),
       );
     });

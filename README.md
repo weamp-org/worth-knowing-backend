@@ -283,35 +283,35 @@ The project uses two env files loaded in order: `.env.local` (local overrides, g
 
 All endpoints are prefixed with `/api/v1`.
 
-| Method   | Path                                     | Auth                   | Description                                            |
-| -------- | ---------------------------------------- | ---------------------- | ------------------------------------------------------ |
-| `GET`    | `/`                                      | Public                 | Service health                                         |
-| `GET`    | `/tags`                                  | Public                 | Search tags                                            |
-| `PATCH`  | `/tags/:id`                              | Admin only             | Rename a tag                                           |
-| `DELETE` | `/tags/:id`                              | Admin only             | Delete an unused tag                                   |
-| `GET`    | `/resources`                             | Public                 | List resources; `?q=` searches, `?sort=` orders        |
-| `GET`    | `/resources/:id`                         | Public                 | One resource                                           |
-| `GET`    | `/resources/:id/mine`                    | Authenticated          | Did you contribute it                                  |
-| `POST`   | `/resources`                             | Authenticated          | Share a resource (409 if you already shared that link) |
-| `PATCH`  | `/resources/:id`                         | Contributor or admin   | Update a resource                                      |
-| `DELETE` | `/resources/:id`                         | Contributor or admin   | Delete a resource                                      |
-| `GET`    | `/saved`                                 | Authenticated          | Your own saved resources, newest saved first           |
-| `GET`    | `/saved/:resourceId`                     | Authenticated          | Did you save this resource                             |
-| `POST`   | `/saved`                                 | Authenticated          | Save a resource (idempotent)                           |
-| `DELETE` | `/saved/:resourceId`                     | Authenticated          | Remove a resource from your saved list                 |
-| `GET`    | `/collections/me`                        | Authenticated          | Your own collections                                   |
-| `GET`    | `/collections/:id`                       | Public                 | One collection (404 if private and not yours)          |
-| `GET`    | `/collections/:id/resources`             | Public                 | A collection's contents, newest collected first        |
-| `POST`   | `/collections`                           | Authenticated          | Create a collection (private unless you say otherwise) |
-| `PATCH`  | `/collections/:id`                       | Owner or admin         | Update a collection                                    |
-| `DELETE` | `/collections/:id`                       | Owner or admin         | Delete a collection                                    |
-| `POST`   | `/collections/:id/resources`             | Owner                  | Add a resource (idempotent)                            |
-| `DELETE` | `/collections/:id/resources/:resourceId` | Owner                  | Remove a resource from a collection                    |
-| `GET`    | `/users/me/settings`                     | Authenticated          | Your own settings                                      |
-| `GET`    | `/users/me/profile`                      | Authenticated          | Your own profile                                       |
-| `PATCH`  | `/users/me/profile`                      | Authenticated          | Update your profile                                    |
-| `GET`    | `/users/:username`                       | Public                 | Somebody's public profile                              |
-| `POST`   | `/webhooks/clerk`                        | Public (skip throttle) | Clerk webhook events                                   |
+| Method   | Path                                     | Auth                   | Description                                                              |
+| -------- | ---------------------------------------- | ---------------------- | ------------------------------------------------------------------------ |
+| `GET`    | `/`                                      | Public                 | Service health                                                           |
+| `GET`    | `/tags`                                  | Public                 | Search tags                                                              |
+| `PATCH`  | `/tags/:id`                              | Admin only             | Rename a tag                                                             |
+| `DELETE` | `/tags/:id`                              | Admin only             | Delete an unused tag                                                     |
+| `GET`    | `/resources`                             | Public                 | List resources; `?q=` searches, `?sort=` orders; returns `facets` counts |
+| `GET`    | `/resources/:id`                         | Public                 | One resource                                                             |
+| `GET`    | `/resources/:id/mine`                    | Authenticated          | Did you contribute it                                                    |
+| `POST`   | `/resources`                             | Authenticated          | Share a resource (409 if you already shared that link)                   |
+| `PATCH`  | `/resources/:id`                         | Contributor or admin   | Update a resource                                                        |
+| `DELETE` | `/resources/:id`                         | Contributor or admin   | Delete a resource                                                        |
+| `GET`    | `/saved`                                 | Authenticated          | Your own saved resources, newest saved first                             |
+| `GET`    | `/saved/:resourceId`                     | Authenticated          | Did you save this resource                                               |
+| `POST`   | `/saved`                                 | Authenticated          | Save a resource (idempotent)                                             |
+| `DELETE` | `/saved/:resourceId`                     | Authenticated          | Remove a resource from your saved list                                   |
+| `GET`    | `/collections/me`                        | Authenticated          | Your own collections                                                     |
+| `GET`    | `/collections/:id`                       | Public                 | One collection (404 if private and not yours)                            |
+| `GET`    | `/collections/:id/resources`             | Public                 | A collection's contents, newest collected first                          |
+| `POST`   | `/collections`                           | Authenticated          | Create a collection (private unless you say otherwise)                   |
+| `PATCH`  | `/collections/:id`                       | Owner or admin         | Update a collection                                                      |
+| `DELETE` | `/collections/:id`                       | Owner or admin         | Delete a collection                                                      |
+| `POST`   | `/collections/:id/resources`             | Owner                  | Add a resource (idempotent)                                              |
+| `DELETE` | `/collections/:id/resources/:resourceId` | Owner                  | Remove a resource from a collection                                      |
+| `GET`    | `/users/me/settings`                     | Authenticated          | Your own settings                                                        |
+| `GET`    | `/users/me/profile`                      | Authenticated          | Your own profile                                                         |
+| `PATCH`  | `/users/me/profile`                      | Authenticated          | Update your profile                                                      |
+| `GET`    | `/users/:username`                       | Public                 | Somebody's public profile                                                |
+| `POST`   | `/webhooks/clerk`                        | Public (skip throttle) | Clerk webhook events                                                     |
 
 The template's `POST /users`, `GET /users`, `GET /users/:id`, `PATCH
 /users/:id` and `DELETE /users/:id` were all removed.

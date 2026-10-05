@@ -24,8 +24,11 @@ import { CreateResourceDto } from './dtos/create-resource.dto';
 import { ReportResourceDto } from './dtos/report-resource.dto';
 import { UpdateResourceDto } from './dtos/update-resource.dto';
 import {
+  buildFacetQuery,
   buildRankedResourceQuery,
   type RankedResource,
+  type ResourceFacetRow,
+  type ResourceFacets,
 } from './resource-search';
 import {
   DEFAULT_RESOURCE_SORT,
@@ -393,19 +396,61 @@ export class ResourcesService {
      * them from disagreeing: relevance carries `(score, id)`, and every column
      * ordering carries a bare id.
      */
-    if (needle && sort === undefined) {
-      return this.searchResources({
-        needle,
-        take,
-        // Decoded here rather than inside the raw query so a malformed cursor is a
-        // 400 before the database is touched at all, matching the unfiltered path.
-        cursor: cursor ? decodeRankedCursor(cursor) : undefined,
-        viewerId,
-        tag,
-        contributorUsername,
-        type,
-        accessType,
-      });
+    /*
+     * Facet counts ride along with every listing.
+     *
+     * Same response as the listing itself rather than a second endpoint, and that
+     * is not a convenience. A count and the list it describes have to be true of
+     * the same moment: two requests could straddle a save or a delete and disagree,
+     * leaving a dropdown promising four books above a list showing three, with no
+     * way for a reader to tell which is lying. One response is one snapshot.
+     *
+     * Deliberately unconditional — an unfiltered browse has honest counts too, and
+     * gating them on `q` would mean the dropdowns appeared and disappeared as the
+     * search came and went.
+     */
+    /*
+     * Cursor decoded *before* anything reaches the database.
+     *
+     * Deliberately above the facet query rather than inside the branch below: that
+     * query now runs on every request, so a decode left down there would reject a
+     * malformed cursor only after a full grouped count had gone out — still a 400,
+     * but no longer "before the database is touched at all", which is the guarantee
+     * this path documents and the reason the decode is here at all.
+     *
+     * Which regime applies is decided by the same `needle && sort` test as the branch
+     * below, so this only ever decodes the cursor the branch would have used —
+     * eagerly decoding a bare id here would reject a perfectly valid unfiltered
+     * cursor, which is the mistake this placement is avoiding along with the late
+     * one.
+     */
+    const isRanked = Boolean(needle) && sort === undefined;
+    const rankedCursor =
+      isRanked && cursor ? decodeRankedCursor(cursor) : undefined;
+
+    const facets = await this.resourceFacets({
+      needle,
+      tag,
+      contributorUsername,
+      type,
+      accessType,
+    });
+
+    if (isRanked && needle) {
+      return {
+        ...(await this.searchResources({
+          needle,
+          take,
+          // Decoded above, ahead of every query.
+          cursor: rankedCursor,
+          viewerId,
+          tag,
+          contributorUsername,
+          type,
+          accessType,
+        })),
+        facets,
+      };
     }
 
     // Each key is independent and a caller may send any combination of them, so
@@ -445,6 +490,10 @@ export class ResourcesService {
     let rows: ResourceWithRelations[];
 
     try {
+      // Decoded inside the `try` on purpose: a well-formed cursor whose row is gone
+      // arrives as a P2025 from Prisma, and that has to become the same 400 as a
+      // malformed one. The decode itself cannot throw here — a cursor that does not
+      // decode was already rejected above the facet query.
       rows = await this.prisma.resource.findMany({
         where: Object.keys(where).length > 0 ? where : undefined,
         orderBy: resourceOrderBy[sort ?? DEFAULT_RESOURCE_SORT],
@@ -471,7 +520,65 @@ export class ResourcesService {
     return {
       items: items.map((row) => toResourceResponse(row, viewerId)),
       nextCursor: hasMore && last ? encodeCursor(last.id) : null,
+      facets,
     };
+  }
+
+  /**
+   * Grouped counts for the two filterable facets.
+   *
+   * **This is the one place in the resource API that counts**, and it gives up the
+   * rule {@link buildRankedResourceQuery} is built on — `take` is one over the page
+   * size precisely so `hasMore` needs no `COUNT(*)`. That remains true of the
+   * listing; a facet count is not derivable from a page, so counting is the feature
+   * rather than an oversight.
+   *
+   * It is affordable because it is two `GROUP BY`s over one filtered set, and
+   * because `buildFacetQuery` applies the *same* scoring expression the ranked
+   * query does. A count that disagreed with the list beside it would be worse than
+   * no count at all.
+   *
+   * Filled in densely over the full enums, so an option nobody has used reads `(0)`
+   * rather than being absent. See {@link ResourceFacets}.
+   */
+  private async resourceFacets({
+    needle,
+    tag,
+    contributorUsername,
+    type,
+    accessType,
+  }: {
+    /** Already trimmed, so `undefined` genuinely means "no search". */
+    needle?: string;
+    tag?: string;
+    contributorUsername?: string;
+    type?: ResourceType;
+    accessType?: AccessType;
+  }): Promise<ResourceFacets> {
+    const rows = await this.prisma.$queryRaw<ResourceFacetRow[]>(
+      buildFacetQuery({ needle, tag, contributorUsername, type, accessType }),
+    );
+
+    const byType = Object.fromEntries(
+      Object.values(ResourceType).map((value) => [value, 0]),
+    ) as Record<ResourceType, number>;
+
+    const byAccessType = Object.fromEntries(
+      Object.values(AccessType).map((value) => [value, 0]),
+    ) as Record<AccessType, number>;
+
+    for (const row of rows) {
+      // Narrowed by the literal above, which is the only thing that can produce
+      // these two strings. An unknown facet would be a database bug, and silently
+      // dropping it would turn that into a wrong count instead of a loud one.
+      if (row.facet === 'type') {
+        byType[row.value as ResourceType] = row.count;
+      } else {
+        byAccessType[row.value as AccessType] = row.count;
+      }
+    }
+
+    return { byType, byAccessType } satisfies ResourceFacets;
   }
 
   /**

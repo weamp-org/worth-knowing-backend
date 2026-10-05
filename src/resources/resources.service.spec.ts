@@ -119,6 +119,64 @@ describe('ResourcesService', () => {
     return arg.data;
   };
 
+  /*
+   * Both raw queries, told apart.
+   *
+   * The facet counts run on *every* listing, so "`$queryRaw` was never called" is no
+   * longer evidence that relevance did not engage — and an assertion like that would
+   * now pass for entirely the wrong reason. These two helpers pick a specific query
+   * out of the calls, so a test about the ranking cannot be satisfied by the facet
+   * query, or the reverse.
+   */
+  const allRawSql = (): string[] =>
+    (prisma.$queryRaw.mock.calls as unknown as [{ text: string }][]).map(
+      ([query]) => query.text.replace(/\s+/g, ' '),
+    );
+
+  /** The relevance query, or `undefined` if relevance did not engage. */
+  const rankedSql = (): string | undefined =>
+    allRawSql().find((text) => text.includes('ORDER BY "score"'));
+
+  /** The facet-count query, or `undefined` if it did not run. */
+  const facetSql = (): string | undefined =>
+    allRawSql().find((text) => text.includes('GROUP BY "type"'));
+
+  /**
+   * The `Prisma.Sql` handed to the ranking query, and its bound values.
+   *
+   * Typed through `unknown` because the calls are heterogeneous — the ranking query
+   * and the facet query share one mock, and `$queryRaw`'s own type carries both.
+   */
+  type RawCall = [{ text: string; values: unknown[] }];
+
+  const rankedCall = (): { text: string; values: unknown[] } | undefined => {
+    const calls = prisma.$queryRaw.mock.calls as unknown as RawCall[];
+    // The match returns the whole argument *tuple*, so the query itself has to be
+    // pulled back out of it.
+    const found = calls.find(([query]) =>
+      query.text.includes('ORDER BY "score"'),
+    );
+    return found?.[0];
+  };
+
+  /** Every enum member at zero — what a listing with no matches looks like. */
+  const noFacets = {
+    byType: {
+      ARTICLE: 0,
+      BOOK: 0,
+      COURSE: 0,
+      DATASET: 0,
+      OTHER: 0,
+      PLAYLIST: 0,
+      PODCAST: 0,
+      RESEARCH_PAPER: 0,
+      TOOL: 0,
+      VIDEO: 0,
+      WEBSITE: 0,
+    },
+    byAccessType: { FREE: 0, FREEMIUM: 0, PAID: 0, UNKNOWN: 0 },
+  };
+
   it('should be defined', () => {
     expect(service).toBeDefined();
   });
@@ -755,7 +813,11 @@ describe('ResourcesService', () => {
 
       const result = await service.findAll({});
 
-      expect(result).toEqual({ items: [], nextCursor: null });
+      expect(result).toEqual({
+        items: [],
+        nextCursor: null,
+        facets: noFacets,
+      });
     });
 
     it('passes a decoded cursor to prisma and skips the cursor row', async () => {
@@ -898,7 +960,11 @@ describe('ResourcesService', () => {
 
       const result = await service.findAll({ q: 'nothing at all' });
 
-      expect(result).toEqual({ items: [], nextCursor: null });
+      expect(result).toEqual({
+        items: [],
+        nextCursor: null,
+        facets: noFacets,
+      });
       expect(prisma.resource.findMany).not.toHaveBeenCalled();
     });
 
@@ -953,14 +1019,16 @@ describe('ResourcesService', () => {
       // The raw query receives values as bound parameters, so the decoded cursor
       // has to reach it — and the resumed comparison has to be row-value, or a
       // page boundary either repeats or skips rows.
-      expect(rawSql()).toContain('("score", "id") < ($');
-      expect(prisma.$queryRaw).toHaveBeenCalledWith(
-        expect.objectContaining({
-          // The whole bound-parameter list, so an exact match would be brittle:
-          // the scoring terms bind several values each.
-          values: valuesContaining(60, 'ckq8f2'),
-        }),
-      );
+      expect(rankedSql()).toContain('("score", "id") < ($');
+      // Asserted against the ranking query specifically. `toHaveBeenCalledWith` on
+      // the shared `$queryRaw` mock would pass on the facet query's values, which
+      // bind none of these.
+      // Asserted against the ranking query's own bound values. Going through
+      // `toHaveBeenCalledWith` on the shared `$queryRaw` mock would pass on the
+      // facet query instead, which binds neither of these.
+      const bound = rankedCall()?.values ?? [];
+      expect(bound).toContain(60);
+      expect(bound).toContain('ckq8f2');
     });
 
     it('rejects a malformed cursor before hitting the database', async () => {
@@ -969,6 +1037,9 @@ describe('ResourcesService', () => {
       await expect(service.findAll({ q: 'sapiens', cursor })).rejects.toThrow(
         BadRequestException,
       );
+      // The cursor is decoded before either raw query runs, so *neither* should
+      // have reached the database. This one is a genuine "no query at all", which
+      // is why it is not phrased against `rankedSql()`.
       expect(prisma.$queryRaw).not.toHaveBeenCalled();
     });
 
@@ -992,7 +1063,9 @@ describe('ResourcesService', () => {
 
       await service.findAll({ q });
 
-      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      // Relevance must not engage for a blank query — hence no ranking query. The
+      // facet query runs regardless, so this is not "no raw query at all".
+      expect(rankedSql()).toBeUndefined();
       expect(prisma.resource.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -1214,7 +1287,9 @@ describe('ResourcesService', () => {
 
       await service.findAll({ q: 'sapiens', sort: ResourceSort.Title });
 
-      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      // The facet query runs regardless, so this asserts the *ranking* query did
+      // not. Reading it as "no raw query ran" would pass for the wrong reason.
+      expect(rankedSql()).toBeUndefined();
       expect(orderBy()).toEqual([{ title: 'asc' }, { id: 'asc' }]);
     });
 
@@ -1232,7 +1307,7 @@ describe('ResourcesService', () => {
       expect(prisma.resource.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ cursor: { id: 'ckq8f2' }, skip: 1 }),
       );
-      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      expect(rankedSql()).toBeUndefined();
     });
 
     // A ranked cursor arriving on a column-ordered request decodes as an id, finds
@@ -1247,7 +1322,78 @@ describe('ResourcesService', () => {
         cursor: encodeRankedCursor(100, 'ckq8f2'),
       });
 
-      expect(result).toEqual({ items: [], nextCursor: null });
+      expect(result).toEqual({
+        items: [],
+        nextCursor: null,
+        facets: noFacets,
+      });
+    });
+  });
+
+  describe('facets', () => {
+    const facetRows = (
+      ...rows: [{ facet: string; value: string; count: number }]
+    ) => rows;
+
+    it('counts every type and access level on an unfiltered listing', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+      prisma.$queryRaw.mockResolvedValue(
+        facetRows({ facet: 'type', value: 'BOOK', count: 4 }),
+      );
+
+      const { facets } = await service.findAll({});
+
+      expect(facets.byType.BOOK).toBe(4);
+      // Every enum member present, not just the ones that matched — a facet at zero
+      // is a real answer, and omitting it would make an option vanish exactly when
+      // somebody is deciding whether it is worth clicking.
+      expect(Object.keys(facets.byType)).toHaveLength(
+        Object.values(ResourceType).length,
+      );
+      expect(facets.byAccessType.FREE).toBe(0);
+    });
+
+    it('scores with the same expression the ranking does, so a count cannot disagree with the list', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll({ q: 'sapiens' });
+
+      // The load-bearing property. A facet count is only worth showing if it matches
+      // what the list beside it shows, and the way to guarantee that is for both to
+      // come from one expression rather than two copies of the scoring bands.
+      //
+      // The needle itself is a bound parameter, so it is absent from the text — what
+      // is observable is that both queries carry the same scoring arithmetic, the
+      // fuzzy band being the part a second copy would most likely drop.
+      expect(rankedSql()).toContain('word_similarity');
+      expect(facetSql()).toContain('word_similarity');
+    });
+
+    it('excludes each facet from its own grouping, so switching is answerable', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll({ q: 'sapiens', type: 'BOOK' });
+
+      // Two groupings, each dropping one of the two enum filters. A count that
+      // excluded its own filter would read `(0)` for every option that is not the
+      // active one — true, and useless, since the dropdown exists to be changed.
+      const sql = facetSql() ?? '';
+      expect(sql).toContain('GROUP BY "type"');
+      expect(sql).toContain('GROUP BY "accessType"');
+      // The `type` cast appears exactly once: only the accessType grouping is
+      // allowed to filter on it. Two occurrences would mean the type grouping had
+      // counted itself, and every non-book option would read `(0)`.
+      expect(sql.split('AS "ResourceType"').length - 1).toBe(1);
+    });
+
+    it('runs even when nothing else filters, so an unfiltered browse has honest counts', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.findAll({});
+
+      expect(facetSql()).toContain('GROUP BY "type"');
     });
   });
 

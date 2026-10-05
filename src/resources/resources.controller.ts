@@ -68,7 +68,7 @@ export class ResourcesController {
   @ApiOperation({
     summary: 'List or search resources, filtered by tag, type and access level',
     description:
-      'Filters combine freely: `tag`, `contributor`, `type`, `accessType`. Without `sort` the order is newest first, or relevance when `q` is present — relevance is the absence of `sort`, so `q` with a `sort` means every match in that order. The `nextCursor` is only valid for the same query: relevance paging carries a score, every other ordering a bare id.',
+      'Filters combine freely: `tag`, `contributor`, `type`, `accessType`. Without `sort` the order is newest first, or relevance when `q` is present — relevance is the absence of `sort`, so `q` with a `sort` means every match in that order. The `nextCursor` is only valid for the same query: relevance paging carries a score, every other ordering a bare id. Every page carries `facets`: counts per type and per access level for the current query, where each facet ignores its own filter so the dropdowns can show what switching to an option would yield.',
   })
   @ApiOkResponse({ type: PaginatedResourcesResponseDto })
   @ApiBadRequestResponse({ description: 'Invalid query parameter or cursor' })
