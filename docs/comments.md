@@ -427,6 +427,41 @@ called a report, and it is moderation tooling rather than a vote.
 So: **no karma, no votes, no score.** `commentCount` is a count of remarks, not a
 quality rating, and nothing is ranked by it.
 
+### And no "most commented" rail either
+
+Considered and declined for the home page, alongside the fixed most-saved rail that
+`GET /resources/top-saved` does provide. The difference is what the two counts
+_mean_, and it is not a small one.
+
+`savedCount` is a signal of **interest** — people came back for something. That is
+weak, but it is still a claim about the resource. `commentCount` is a signal of
+**argument volume**: it says people wrote remarks, and nothing more. A comment is
+somebody's _reaction_ to a `why`, so the count is evidence about the conversation
+around a resource rather than about the resource.
+
+Which is the problem. On a curated site the most-discussed resource tends to be the
+most _contested_ one — a weak link, a debatable claim, something people argue past
+— and this product has no downvotes to resolve it (see above, where a downvote is
+rejected precisely because it has no mechanical function in a chronological feed).
+So a rail headed with an implied claim to quality would systematically surface the
+most-argued rows, above a heading implying those are the best things here. Ranking
+the site by it would be closer to pure engagement optimisation than any other
+available signal, which the product principles rule out directly.
+
+It is also much emptier in practice: on a young site almost every resource has zero
+comments, so the rail would be near-permanently absent in a way the most-saved one
+is not.
+
+Two narrower things that **are** fine, and are the shape to reach for instead:
+
+- **`commentCount` on a single resource**, which `ResourceCard` and the resource
+  page already carry. "3 people are discussing this" is a fact about that
+  resource, and is true whenever it is shown. It is the aggregate that stops being
+  meaningful, not the number.
+- **Discussion as a discoverability signal for people**, not for arguments — a
+  recently-active-contributors surface serves the loop, where a most-commented
+  rail only ranks discourse.
+
 ## Flat and chronological
 
 The listing is `WHERE resource_id = ? ORDER BY created_at DESC, id DESC`,

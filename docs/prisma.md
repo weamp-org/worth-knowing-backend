@@ -242,6 +242,11 @@ duplicate-URL check's `{ contributorId, url }` predicate as a prefix.
   a rail with no page two has nothing for the count to shift beneath. It is
   deliberately unreachable as a `sort`, since `GET /resources` _is_ paginated.
   See [saved.md](./saved.md#get-resources-top-saved--the-exception-and-why-it-is-safe).
+  **`commentCount` is a second, independent refusal and not a `top-commented`
+  away.** Removing the pagination objection would not make it rankable: that count
+  is argument volume rather than a signal about the resource, so a top-N of it
+  surfaces the most-argued rows under a heading implying quality. See
+  [comments.md](./comments.md#and-no-most-commented-rail-either).
 - `nextCursor` is `null` on the last page. It is computed by fetching
   `limit + 1` rows rather than running a `COUNT(*)`, so paging costs the same
   regardless of table size.
