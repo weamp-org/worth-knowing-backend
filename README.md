@@ -58,11 +58,16 @@ private thing a person has here, and unlike a resource or a profile there is no
 public version of it. `savedCount`, by contrast, is public and sits on every
 resource response; it is a signal of _interest_, not of quality.
 
-There is deliberately **no sort-by-saved and no "most saved" rail**. Paging by an
-aggregate whose value changes while you page through it is genuinely hard, and
+There is deliberately **no sort-by-saved on any paginated list**, because paging by
+an aggregate whose value changes while you page through it is genuinely hard, and
 ranking the whole feed by saves would bury the newest contribution the moment
-anybody saves anything. Sorting belongs on a filtered view, opt-in — see
-[docs/saved.md](docs/saved.md).
+anybody saves anything.
+
+There **is** a fixed most-saved rail on the home page — a top-N with no cursor,
+which is the one case that objection does not reach. It is not reachable as a
+`sort`, it cannot page, and it skips resources nobody has saved rather than
+presenting a zero-saved row under a "Most saved" heading. Sorting beyond that
+belongs on a filtered view, opt-in — see [docs/saved.md](docs/saved.md).
 
 - **Saved resources** — Bookmark any resource in one click, independent of collections; a public save count on every resource response
 - **REST API** — Global `/api/v1` prefix, users CRUD scaffold, `ValidationPipe` with whitelist/transform (with implicit conversion)

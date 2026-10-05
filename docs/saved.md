@@ -85,10 +85,10 @@ per-viewer part.
 in `withProfilePath` for the same reason the contributor's raw fields are replaced
 with a resolved `name` and `profilePath`.
 
-## Sorting by saved count is deliberately absent
+## Sorting by saved count is deliberately absent on any paginated list
 
-`/saved` is newest-saved first. There is **no** sort-by-saved, and no "most saved"
-rail on the home page.
+`/saved` is newest-saved first, and `savedCount` is **not** a `ResourceSort`. There
+is no `?sort=most-saved`, and `GET /resources` will never accept one.
 
 Two reasons, both settled:
 
@@ -103,6 +103,50 @@ Two reasons, both settled:
 
 Sorting is worth doing eventually, but only on a **filtered** view — a tag or a
 contributor — where it is opt-in rather than the default posture of the site.
+
+### `GET /resources/top-saved` — the exception, and why it is safe
+
+The home page has a **most-saved rail**: a fixed top-N, by default six, with no
+cursor and no `nextCursor`.
+
+That is not a contradiction of the above, it is the one case the objection does not
+reach. The reason `savedCount` is absent from `ResourceSort` is that the count
+_moves while somebody pages_ — and a rail has no page two, so there is nothing for
+it to move beneath. The reasoning above is about pagination, not about the count
+being untrustworthy.
+
+Three properties keep the exemption honest rather than a loophole:
+
+- **It is not reachable as a sort.** `mostSavedOrderBy` is a separate export, not
+  a `ResourceSort` member, so `?sort=most-saved` on `GET /resources` is still a 400. Adding it to the enum is exactly the change that would reintroduce the bug,
+  because `GET /resources` _is_ paginated.
+- **It cannot page.** `TopSavedQueryDto` deliberately does **not** extend
+  `PaginationQueryDto`: it carries no `cursor`, so `?cursor=` is a 400 under
+  `forbidNonWhitelisted` rather than a parameter that validates and is dropped.
+- **It excludes zero-saves.** `where: { savedResources: { some: {} } }`. Ordering by
+  count and returning the first six regardless would put a "Most saved" heading
+  above six resources nobody has saved — which on a young site is most of them, and
+  is a false statement rather than a thin section. So the rail returns fewer than
+  `limit` rows, or none, and the home page collapses the section instead of padding
+  it.
+
+The ceiling is `MAX_TOP_SAVED = 24`, well under `MAX_PAGE_SIZE`. The gap is
+deliberate: this ordering is a relation count, computed with a join or aggregate
+over `SavedResource` rather than from an index on `Resource`, and nothing on a
+homepage rail legitimately needs 100 rows.
+
+### Worded "Most saved", never "Best"
+
+`savedCount` is a signal of **interest**, not of quality — the same distinction that
+puts it on the public response. The count says people came back for something, not
+that it is the strongest thing on the site. The heading is part of the feature: a
+rail labelled "Best" would be claiming an editorial judgement the data does not
+support, on the most-read surface on the site.
+
+It is also, on a seeded corpus, close to static: the top handful stop moving once
+they are in place. That is tolerable for a secondary rail and would not be for the
+default ordering of the feed, which is the other half of why `findAll` does not
+rank this way.
 
 ## Anonymity is unaffected
 

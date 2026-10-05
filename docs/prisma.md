@@ -238,7 +238,10 @@ duplicate-URL check's `{ contributorId, url }` predicate as a prefix.
 - `savedCount` and `commentCount` are deliberately **not sortable**. See
   `resourceOrderBy` — the count moves while somebody is paging, which duplicates
   and skips rows silently. A fixed top-N by saved count is a safe different
-  question, which is why a "most saved" section is fine and this is not.
+  question, which is why `GET /resources/top-saved` exists and this does not:
+  a rail with no page two has nothing for the count to shift beneath. It is
+  deliberately unreachable as a `sort`, since `GET /resources` _is_ paginated.
+  See [saved.md](./saved.md#get-resources-top-saved--the-exception-and-why-it-is-safe).
 - `nextCursor` is `null` on the last page. It is computed by fetching
   `limit + 1` rows rather than running a `COUNT(*)`, so paging costs the same
   regardless of table size.
