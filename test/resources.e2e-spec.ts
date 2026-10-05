@@ -1511,4 +1511,83 @@ describe('Resources (e2e)', () => {
       await asUser('clerk_123').post(undismiss).expect(204);
     });
   });
+
+  /*
+   * The most-saved rail.
+   *
+   * This block earns its place for one specific reason: **route order**.
+   * `GET /resources/:id` matches `/resources/top-saved` as an id of "top-saved",
+   * and only declaration order keeps that from happening. A unit test of the
+   * controller calls `topSaved()` directly and would pass with the routes in
+   * either order — the failure only exists in the assembled router, so it takes a
+   * real HTTP request to see it.
+   */
+  describe('GET /resources/top-saved', () => {
+    it('serves it as its own route, not as an :id lookup', async () => {
+      prisma.resource.findMany.mockResolvedValue([
+        { id: 'res_1', _count: { savedResources: 7 } },
+      ]);
+
+      const response = await asUser('clerk_123')
+        .get('/api/v1/resources/top-saved')
+        .expect(200);
+
+      // Reaching `findOne` with the literal string would be a 404; reaching it and
+      // *finding* something would be worse. Either way `findUnique` running at all
+      // means `:id` won the match.
+      expect(prisma.resource.findUnique).not.toHaveBeenCalled();
+      expect(response.body).toEqual([
+        expect.objectContaining({ id: 'res_1', savedCount: 7 }),
+      ]);
+    });
+
+    /*
+     * `forbidNonWhitelisted` turning an ignored parameter into a 400.
+     *
+     * A `?cursor=` that validated and was then dropped would leave a client paging
+     * a list that cannot page, and this route has no `nextCursor` to hand back.
+     * Rejecting it says so instead.
+     */
+    it('rejects a cursor rather than ignoring it', async () => {
+      await asUser('clerk_123')
+        .get('/api/v1/resources/top-saved?cursor=abc')
+        .expect(400);
+    });
+
+    it('rejects a limit above the rail ceiling', async () => {
+      await asUser('clerk_123')
+        .get('/api/v1/resources/top-saved?limit=100')
+        .expect(400);
+    });
+
+    it('accepts a limit within the rail ceiling', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await asUser('clerk_123')
+        .get('/api/v1/resources/top-saved?limit=24')
+        .expect(200);
+    });
+
+    it('is public', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      // No `x-test-user-id`, so `getAuth` returns no user and the guards have
+      // nothing to admit. The route is `@Public()` and must still answer.
+      await request(app.getHttpServer())
+        .get('/api/v1/resources/top-saved')
+        .expect(200);
+    });
+
+    it('answers with an empty list, not a 404, when nothing has been saved', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      const response = await asUser('clerk_123')
+        .get('/api/v1/resources/top-saved')
+        .expect(200);
+
+      // The rail being unfillable is a state the home page draws nothing for,
+      // not a fault. A 404 here would read as the route not existing.
+      expect(response.body).toEqual([]);
+    });
+  });
 });

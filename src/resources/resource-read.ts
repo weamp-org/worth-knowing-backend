@@ -121,6 +121,36 @@ export const resourceOrderBy: Record<
   [ResourceSort.Title]: [{ title: 'asc' }, { id: 'asc' }],
 };
 
+/**
+ * Most-saved first, as a relation count rather than a column.
+ *
+ * **Not a {@link ResourceSort}, and deliberately not reachable as one.** The
+ * reason `resourceOrderBy` refuses to sort by `savedCount` is that the count moves
+ * while somebody pages, which makes a bare-id cursor repeat and skip rows. A fixed
+ * top-N has no cursor and no second page, so nothing can shift underneath it and
+ * the objection does not apply.
+ *
+ * That is the whole difference, and it is a difference about *paging*, not about
+ * the count being trustworthy. So this lives beside `resourceOrderBy` as a named
+ * ordering rather than inside the enum: adding `MostSaved` to `ResourceSort` would
+ * make `?sort=most-saved` valid on `GET /resources`, which **is** paginated, and
+ * would quietly reintroduce the exact bug the enum's absence prevents.
+ *
+ * `id ASC` after the count is the tiebreaker, for the same reason every other
+ * ordering here has one — a count is massively tied at zero and near-tied
+ * elsewhere, and without a total order the result is whatever the join happened to
+ * emit.
+ *
+ * Expressed as a relation count rather than the `_count.savedResources` select, so
+ * Postgres computes it in the join. Prisma has no query-builder spelling of
+ * `ORDER BY (SELECT COUNT(*) …)`, and fetching every row to sort in JavaScript is
+ * unbounded, which this API never is.
+ */
+export const mostSavedOrderBy: Prisma.ResourceOrderByWithRelationInput[] = [
+  { savedResources: { _count: 'desc' } },
+  { id: 'asc' },
+];
+
 /** A resource row as read, before any redaction. */
 export type ResourceWithRelations = Prisma.ResourceGetPayload<{
   include: typeof resourceInclude;

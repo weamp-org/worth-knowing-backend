@@ -1397,6 +1397,128 @@ describe('ResourcesService', () => {
     });
   });
 
+  describe('mostSaved', () => {
+    const findManyArgs = (): Record<string, unknown> => {
+      const [[arg]] = prisma.resource.findMany.mock.calls as unknown as [
+        [Record<string, unknown>],
+      ];
+      return arg;
+    };
+
+    it('orders by save count descending, with a total-order tiebreaker', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.mostSaved(undefined);
+
+      expect(findManyArgs().orderBy).toEqual([
+        { savedResources: { _count: 'desc' } },
+        // Without this the count ties at zero across most of a young corpus and
+        // the rail is whatever order the join emitted.
+        { id: 'asc' },
+      ]);
+    });
+
+    /*
+     * The load-bearing assertion in this file.
+     *
+     * Every row here has zero saves. Ordering by count and returning the first six
+     * would render a heading reading "Most saved" above six resources nobody has
+     * saved, which is a false statement about the site rather than a thin section.
+     */
+    it('excludes resources nobody has saved', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.mostSaved(undefined);
+
+      expect(findManyArgs().where).toEqual({ savedResources: { some: {} } });
+    });
+
+    it('returns fewer rows than asked for rather than padding with zero-saves', async () => {
+      // One saved resource exists. The honest answer is a one-item rail.
+      prisma.resource.findMany.mockResolvedValue([
+        { id: 'res_1', _count: { savedResources: 3 } },
+      ]);
+
+      const result = await service.mostSaved(6);
+
+      expect(result).toHaveLength(1);
+    });
+
+    it('returns an empty array on a site where nothing has been saved', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await expect(service.mostSaved(6)).resolves.toEqual([]);
+    });
+
+    it('defaults to six rows', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      await service.mostSaved(undefined);
+
+      expect(findManyArgs().take).toBe(6);
+    });
+
+    it('never asks for a cursor, so nothing can shift beneath the rail', async () => {
+      prisma.resource.findMany.mockResolvedValue([]);
+
+      const result = await service.mostSaved(6);
+
+      // The absence is the property. `cursor` and `skip` would make this paginated,
+      // which is the exact situation the count cannot survive.
+      expect(findManyArgs().cursor).toBeUndefined();
+      expect(findManyArgs().skip).toBeUndefined();
+      // A bare array, so there is no `nextCursor` for a client to page with.
+      expect(Array.isArray(result)).toBe(true);
+    });
+
+    it('redacts an anonymous contribution for a stranger', async () => {
+      prisma.resource.findMany.mockResolvedValue([
+        {
+          id: 'res_1',
+          isAnonymous: true,
+          contributorId: 'user_1',
+          contributor: { id: 'user_1', name: 'Ada' },
+          _count: { savedResources: 2 },
+        },
+      ]);
+
+      const [row] = await service.mostSaved(6);
+
+      // Same rule as every other public read — the rail is not an exception to it,
+      // and a home page is the most-read surface on the site.
+      expect(row.contributor).toBeNull();
+      expect(row.contributorId).toBeNull();
+    });
+
+    it('keeps an anonymous contribution visible to its own author', async () => {
+      prisma.resource.findMany.mockResolvedValue([
+        {
+          id: 'res_1',
+          isAnonymous: true,
+          contributorId: 'user_1',
+          contributor: { id: 'user_1', name: 'Ada' },
+          _count: { savedResources: 2 },
+        },
+      ]);
+
+      const [row] = await service.mostSaved(6, 'user_1');
+
+      expect(row.contributor).toEqual(
+        expect.objectContaining({ id: 'user_1' }),
+      );
+    });
+
+    it('flattens savedCount so the rail can show what it is ranking by', async () => {
+      prisma.resource.findMany.mockResolvedValue([
+        { id: 'res_1', _count: { savedResources: 12, comments: 3 } },
+      ]);
+
+      const [row] = await service.mostSaved(6);
+
+      expect(row.savedCount).toBe(12);
+    });
+  });
+
   describe('findOne', () => {
     it('returns the resource when found', async () => {
       prisma.resource.findUnique.mockResolvedValue({

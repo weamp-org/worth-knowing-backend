@@ -28,6 +28,7 @@ const mockResourcesService = {
   create: jest.fn(),
   findAll: jest.fn(),
   findOne: jest.fn(),
+  mostSaved: jest.fn(),
   isMine: jest.fn(),
   update: jest.fn(),
   remove: jest.fn(),
@@ -147,6 +148,44 @@ describe('ResourcesController', () => {
         'res_1',
         'user_1',
       );
+    });
+  });
+
+  describe('home page rails', () => {
+    describe('topSaved', () => {
+      it('forwards the limit and the viewer', async () => {
+        await controller.topSaved({ limit: 6 }, request);
+
+        expect(mockResourcesService.mostSaved).toHaveBeenCalledWith(
+          6,
+          'user_1',
+        );
+      });
+
+      /*
+       * `undefined` rather than `0` or a default. The service owns
+       * `DEFAULT_TOP_SAVED`, and a controller that substituted its own number
+       * would be a second place to change it.
+       */
+      it('forwards an absent limit as undefined, not a default', async () => {
+        await controller.topSaved({}, request);
+
+        expect(mockResourcesService.mostSaved).toHaveBeenCalledWith(
+          undefined,
+          'user_1',
+        );
+      });
+
+      it('passes no viewer for a signed-out read', async () => {
+        mockAuth = { userId: null };
+
+        await controller.topSaved({}, request);
+
+        expect(mockResourcesService.mostSaved).toHaveBeenCalledWith(
+          undefined,
+          undefined,
+        );
+      });
     });
   });
 

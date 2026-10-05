@@ -31,6 +31,7 @@ import { ResourcesService } from './resources.service';
 import { CreateResourceDto } from './dtos/create-resource.dto';
 import { UpdateResourceDto } from './dtos/update-resource.dto';
 import { ListResourcesQueryDto } from './dtos/list-resources-query.dto';
+import { TopSavedQueryDto } from './dtos/top-saved-query.dto';
 import { ReportResourceDto } from './dtos/report-resource.dto';
 import {
   PaginatedResourcesResponseDto,
@@ -87,6 +88,31 @@ export class ResourcesController {
       sort: query.sort,
       viewerId: getAuth(request).userId ?? undefined,
     });
+  }
+
+  /*
+   * The most-saved rail, declared **before** `:id` and that placement is
+   * load-bearing rather than stylistic. Nest matches routes in declaration order,
+   * so a `@Get('top-saved')` below `@Get(':id')` would never be reached —
+   * `/resources/top-saved` would be read as a resource whose id is the string
+   * "top-saved" and 404 on `findOne`, or worse, be *found* if a row somehow had
+   * that id. Literal paths have to precede the parameterised one.
+   */
+
+  @Get('top-saved')
+  @Public()
+  @ApiOperation({
+    summary: 'List the most-saved resources, for the home page',
+    description:
+      'A fixed top-N with no cursor and no `nextCursor`, because the count it orders by moves while somebody pages — which is exactly why `savedCount` is not a `ResourceSort`. Only resources somebody has actually saved are returned, so this is routinely shorter than `limit`, and empty on a site where nothing has been saved yet. Call it "most saved", never "best": the count says people came back, not that it is the strongest thing here.',
+  })
+  @ApiOkResponse({ type: [ResourceResponseDto] })
+  @ApiBadRequestResponse({ description: 'Invalid limit' })
+  topSaved(@Query() query: TopSavedQueryDto, @Req() request: Request) {
+    return this.resourcesService.mostSaved(
+      query.limit,
+      getAuth(request).userId ?? undefined,
+    );
   }
 
   @Get(':id')

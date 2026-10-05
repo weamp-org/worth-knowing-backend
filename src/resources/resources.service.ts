@@ -32,12 +32,14 @@ import {
 } from './resource-search';
 import {
   DEFAULT_RESOURCE_SORT,
+  mostSavedOrderBy,
   ResourceSort,
   resourceInclude,
   resourceOrderBy,
   toResourceResponse,
   type ResourceWithRelations,
 } from './resource-read';
+import { DEFAULT_TOP_SAVED } from './dtos/top-saved-query.dto';
 import {
   resourceReportOrderBy,
   reportResourceInclude,
@@ -522,6 +524,36 @@ export class ResourcesService {
       nextCursor: hasMore && last ? encodeCursor(last.id) : null,
       facets,
     };
+  }
+
+  /**
+   * The most-saved resources, as a fixed top-N with **no cursor**.
+   *
+   * The rail on the home page. It is a separate method rather than a
+   * `ResourceSort` because the two answer different questions and only one of them
+   * can be paged: `findAll` sorts by a column so its cursor stays a bare id, and
+   * the count this orders by *moves while somebody pages*, which is why
+   * `savedCount` is not in that enum at all. A fixed top-N has no page two, so
+   * nothing can shift beneath it — see {@link mostSavedOrderBy}.
+   *
+   * **Only resources somebody has actually saved.** The alternative — ordering by
+   * count and letting the zero-savers fill the rail — produces a page whose
+   * "Most saved" heading sits above six resources with zero saves, which is
+   * simply a false statement about the site. On a young site that is most of them.
+   *
+   * So this returns fewer than `take` rows, or none at all, and the honest
+   * response is an empty array. The home page collapses the section rather than
+   * padding it: a rail that cannot be filled should not claim it was.
+   */
+  async mostSaved(limit: number | undefined, viewerId?: string) {
+    const rows = await this.prisma.resource.findMany({
+      where: { savedResources: { some: {} } },
+      orderBy: mostSavedOrderBy,
+      take: limit ?? DEFAULT_TOP_SAVED,
+      include: resourceInclude,
+    });
+
+    return rows.map((row) => toResourceResponse(row, viewerId));
   }
 
   /**
