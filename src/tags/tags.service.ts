@@ -23,7 +23,14 @@ export interface TagInput {
 /** How many tags a single resource may carry. */
 export const MAX_TAGS_PER_RESOURCE = 5;
 
-/** Upper bound on rows returned by {@link TagsService.search}. */
+/**
+ * Default number of rows returned by {@link TagsService.search}.
+ *
+ * The tag nav is a **most-used cut**, deliberately, and it stays a cut even now
+ * that the endpoint can return more: the home page and `/browse` both want "the
+ * twenty tags most people here are using", not the vocabulary. The count beside
+ * each chip is what makes that legible rather than arbitrary.
+ */
 const SEARCH_RESULT_LIMIT = 20;
 
 /**
@@ -115,9 +122,9 @@ export class TagsService {
    * Renames a tag's display form.
    *
    * The `slug` is deliberately not updatable. It is the tag's identity and it
-   * appears in feed URLs as `/?tag=<slug>`, which other people link to. Renaming
-   * it would break every existing link, and there is no slug history to redirect
-   * from — a tag only knows the one name it was created under.
+   * appears in `/tags/<slug>` URLs, which other people link to. Renaming it would
+   * break every existing link, and there is no slug history to redirect from — a
+   * tag only knows the one name it was created under.
    *
    * So a display rename is always safe, and a slug change never is. Someone who
    * needs a different identity needs a different tag: detach this one from the
@@ -205,13 +212,18 @@ export class TagsService {
    * rows from a table that is small by nature, and is the only way the cap
    * lands on the rows that were actually wanted.
    *
+   * `limit` **defaults to that same most-used cut** so the nav chips are
+   * unaffected by the parameter existing. A caller asking for the whole
+   * vocabulary — the sitemap, which needs every tag that is still attached to
+   * something — passes it explicitly.
+   *
    * Matching covers `slug` as well as `name`, because a contributor who has
    * seen `machine-learning` in a URL will type that rather than the display
    * form. Slugs are already lowercased by {@link slugifyTag}, so the query is
    * lowercased to match rather than asking Postgres for a case-insensitive
    * comparison it cannot index.
    */
-  async search(query?: string) {
+  async search(query?: string, limit: number = SEARCH_RESULT_LIMIT) {
     const trimmed = query?.trim();
 
     const tags = await this.prisma.tag.findMany({
@@ -230,6 +242,46 @@ export class TagsService {
     return tags
       .map(toSearchResult)
       .sort((a, b) => b.resourceCount - a.resourceCount)
-      .slice(0, SEARCH_RESULT_LIMIT);
+      .slice(0, limit);
+  }
+
+  /**
+   * One tag, looked up by its exact slug. Backs `/tags/:slug`.
+   *
+   * **An exact lookup, and that is the whole difference from {@link search}.**
+   * The typeahead above matches on a substring of the name or the slug, because a
+   * contributor is typing a prefix of something they half-remember. A tag page is
+   * not that: `/tags/mach` must not render the page for `/tags/machine-learning`,
+   * because two tags would then answer to one URL and the one that is not the
+   * canonical slug would quietly take the canonical's identity.
+   *
+   * So this is a `findUnique` on the slug, which is the unique identity in the
+   * schema, rather than the substring search.
+   *
+   * The slug's shape is checked before the query rather than after it. A slug
+   * outside the bounds cannot exist — {@link normalizeTags} refuses to create one —
+   * so the answer is already 404, and refusing it without a round trip keeps an
+   * arbitrary request string off the table.
+   *
+   * Returns the same shape every other tag route answers with, so a client can
+   * drop the response straight into a list without reshaping it.
+   *
+   * @throws NotFoundException when no tag carries that slug
+   */
+  async findBySlug(slug: string) {
+    if (!isValidTagSlug(slug)) {
+      throw new NotFoundException(`Tag ${slug} not found`);
+    }
+
+    const tag = await this.prisma.tag.findUnique({
+      where: { slug },
+      include: { _count: { select: { resources: true } } },
+    });
+
+    if (!tag) throw new NotFoundException(`Tag ${slug} not found`);
+
+    // Flattened rather than returned raw, for the same reason `search` does it:
+    // a page needs `resourceCount` under that name, not `_count.resources`.
+    return toSearchResult(tag);
   }
 }

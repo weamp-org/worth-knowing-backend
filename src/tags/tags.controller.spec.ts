@@ -11,6 +11,7 @@ import { UserRole } from '../generated/prisma/enums';
 
 const mockTagsService = {
   search: jest.fn(),
+  findBySlug: jest.fn(),
   updateName: jest.fn(),
   remove: jest.fn(),
 };
@@ -48,13 +49,31 @@ describe('TagsController', () => {
     it('passes the query through', async () => {
       await controller.search({ query: 'machine' });
 
-      expect(mockTagsService.search).toHaveBeenCalledWith('machine');
+      // `undefined` for the limit, so the service applies the twenty-tag cut
+      // rather than the controller deciding what the nav should show.
+      expect(mockTagsService.search).toHaveBeenCalledWith('machine', undefined);
     });
 
     it('passes undefined when no query is given', async () => {
       await controller.search({});
 
-      expect(mockTagsService.search).toHaveBeenCalledWith(undefined);
+      expect(mockTagsService.search).toHaveBeenCalledWith(undefined, undefined);
+    });
+
+    it('passes an explicit limit through, for whole-vocabulary callers', async () => {
+      await controller.search({ limit: 500 });
+
+      expect(mockTagsService.search).toHaveBeenCalledWith(undefined, 500);
+    });
+  });
+
+  describe('findBySlug', () => {
+    it('passes the slug through untouched', async () => {
+      await controller.findBySlug('machine-learning');
+
+      expect(mockTagsService.findBySlug).toHaveBeenCalledWith(
+        'machine-learning',
+      );
     });
   });
 

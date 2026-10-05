@@ -383,5 +383,97 @@ describe('TagsService', () => {
       expect(results.map((t) => t.slug)).toContain('tag-24');
       expect(results[0]).toMatchObject({ slug: 'tag-24', resourceCount: 24 });
     });
+
+    // The nav is a deliberate most-used cut, so the default has to stay at twenty
+    // even though the caller can now ask for more. A nav that quietly grew to the
+    // whole vocabulary would be a worse surface, not a fuller one.
+    it('keeps the twenty-tag cut when no limit is given', async () => {
+      const many = Array.from({ length: 40 }, (_, i) =>
+        tagRow(`tag-${i.toString().padStart(2, '0')}`, i),
+      );
+      prisma.tag.findMany.mockResolvedValue(many);
+
+      const results = await service.search();
+
+      expect(results).toHaveLength(20);
+    });
+
+    // The sitemap needs the whole vocabulary, and the point of this parameter is
+    // that the nav keeps its cut while it does.
+    it('returns more than twenty when a caller explicitly asks', async () => {
+      const many = Array.from({ length: 40 }, (_, i) =>
+        tagRow(`tag-${i.toString().padStart(2, '0')}`, i),
+      );
+      prisma.tag.findMany.mockResolvedValue(many);
+
+      const results = await service.search(undefined, 500);
+
+      expect(results).toHaveLength(40);
+      // Still ranked, and still with no SQL-level cap doing the cutting.
+      const [args] = prisma.tag.findMany.mock.calls[0] as [{ take?: number }];
+      expect(args.take).toBeUndefined();
+    });
+  });
+
+  describe('findBySlug', () => {
+    const tagRow = (slug: string, resourceCount: number) => ({
+      id: `id_${slug}`,
+      name: slug,
+      slug,
+      _count: { resources: resourceCount },
+    });
+
+    it('looks the tag up by exact slug, not by substring', async () => {
+      prisma.tag.findUnique.mockResolvedValue(tagRow('machine-learning', 3));
+
+      await service.findBySlug('machine-learning');
+
+      expect(prisma.tag.findUnique).toHaveBeenCalledWith({
+        where: { slug: 'machine-learning' },
+        include: { _count: { select: { resources: true } } },
+      });
+    });
+
+    // A `findMany` with `contains` here would let `/tags/mach` render the page for
+    // `/tags/machine-learning`, and that page is self-canonical — so two tags
+    // could end up contending for one canonical identity.
+    it('does not fall back to a partial match', async () => {
+      prisma.tag.findUnique.mockResolvedValue(null);
+
+      await expect(service.findBySlug('mach')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('flattens the count into a plain resourceCount field', async () => {
+      prisma.tag.findUnique.mockResolvedValue(tagRow('evolution', 4));
+
+      await expect(service.findBySlug('evolution')).resolves.toEqual({
+        id: 'id_evolution',
+        name: 'evolution',
+        slug: 'evolution',
+        resourceCount: 4,
+      });
+    });
+
+    it('throws for a tag that does not exist', async () => {
+      prisma.tag.findUnique.mockResolvedValue(null);
+
+      await expect(service.findBySlug('nonesuch')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    // A slug outside the bounds cannot exist — `normalizeTags` refuses to create
+    // one — so the answer is already 404 and the table should not be consulted
+    // for an arbitrary request string.
+    it('rejects a malformed slug without querying', async () => {
+      await expect(service.findBySlug('a')).rejects.toThrow(NotFoundException);
+      await expect(service.findBySlug('x'.repeat(41))).rejects.toThrow(
+        NotFoundException,
+      );
+
+      expect(prisma.tag.findUnique).not.toHaveBeenCalled();
+    });
   });
 });

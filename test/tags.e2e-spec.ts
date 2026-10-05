@@ -156,8 +156,85 @@ describe('Tags (e2e)', () => {
 
   it('GET /api/v1/tags rejects an unknown query parameter', async () => {
     await request(app.getHttpServer())
-      .get('/api/v1/tags?limit=100')
+      .get('/api/v1/tags?perPage=100')
       .expect(400);
+  });
+
+  it('GET /api/v1/tags returns the twenty-tag cut when no limit is given', async () => {
+    const many = Array.from({ length: 40 }, (_, i) =>
+      tagRow(`tag-${i.toString().padStart(2, '0')}`, i),
+    );
+    prisma.tag.findMany.mockResolvedValue(many);
+
+    const response = await request(app.getHttpServer())
+      .get('/api/v1/tags')
+      .expect(200);
+
+    // The nav depends on this being a cut, not the whole vocabulary.
+    expect((response.body as unknown[]).length).toBe(20);
+  });
+
+  it('GET /api/v1/tags?limit= returns the whole vocabulary when asked', async () => {
+    const many = Array.from({ length: 40 }, (_, i) =>
+      tagRow(`tag-${i.toString().padStart(2, '0')}`, i),
+    );
+    prisma.tag.findMany.mockResolvedValue(many);
+
+    const response = await request(app.getHttpServer())
+      .get('/api/v1/tags?limit=500')
+      .expect(200);
+
+    expect((response.body as unknown[]).length).toBe(40);
+  });
+
+  it('GET /api/v1/tags?limit= rejects a limit above the ceiling', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/tags?limit=1001')
+      .expect(400);
+  });
+
+  describe('GET /api/v1/tags/:slug', () => {
+    it('is public and returns the tag with a flat resourceCount', async () => {
+      prisma.tag.findUnique.mockResolvedValue(tagRow('evolution', 6));
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/tags/evolution')
+        .expect(200);
+
+      expect(response.body).toEqual({
+        id: 'id_evolution',
+        name: 'evolution',
+        slug: 'evolution',
+        resourceCount: 6,
+      });
+    });
+
+    it('404s for a tag that does not exist', async () => {
+      prisma.tag.findUnique.mockResolvedValue(null);
+
+      await request(app.getHttpServer())
+        .get('/api/v1/tags/nonesuch')
+        .expect(404);
+    });
+
+    // No substring fallback: `/tags/mach` must not answer for
+    // `/tags/machine-learning`, because the tag page is self-canonical and two
+    // tags contending for one URL is a canonical pointing at the wrong page.
+    it('404s for a prefix of a real slug rather than matching it', async () => {
+      prisma.tag.findUnique.mockResolvedValue(null);
+
+      await request(app.getHttpServer()).get('/api/v1/tags/evol').expect(404);
+
+      expect(prisma.tag.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { slug: 'evol' } }),
+      );
+    });
+
+    it('404s for a slug too short to be a tag, without querying', async () => {
+      await request(app.getHttpServer()).get('/api/v1/tags/a').expect(404);
+
+      expect(prisma.tag.findUnique).not.toHaveBeenCalled();
+    });
   });
 
   describe('admin writes', () => {

@@ -34,14 +34,43 @@ import { UserRole } from '../generated/prisma/enums';
 export class TagsController {
   constructor(private readonly tagsService: TagsService) {}
 
-  /** Backs the tag typeahead. Omit `query` for the most-used tags. */
+  /**
+   * Backs the tag typeahead, and the tag nav on the home page and `/browse`.
+   *
+   * Omit `query` for the most-used tags. Omit `limit` and this is the same
+   * most-used cut of twenty it has always returned — the parameter exists for
+   * callers that genuinely want the whole vocabulary, not to lengthen the nav.
+   */
   @Get()
   @Public()
   @ApiOperation({ summary: 'Search tags, most-used first' })
   @ApiOkResponse({ type: [TagSearchResultDto] })
   @ApiBadRequestResponse({ description: 'Invalid query parameter' })
   search(@Query() query: ListTagsQueryDto) {
-    return this.tagsService.search(query.query);
+    return this.tagsService.search(query.query, query.limit);
+  }
+
+  /**
+   * One tag by its exact slug. Backs the public `/tags/:slug` page.
+   *
+   * **Exact, where the route above is a substring search.** That difference is
+   * load-bearing rather than incidental: two tags answering to one URL would let
+   * the one that is not the canonical slug take the canonical one's identity, and
+   * `/tags/:slug` is a self-canonical page now, so that is a canonical pointing at
+   * the wrong page.
+   *
+   * Declared after `GET /tags` so the literal path is not shadowed by `:slug`.
+   *
+   * Public and un-redacted, like every other tag read: a tag is vocabulary, not
+   * somebody's account, so there is no contributor to withhold here.
+   */
+  @Get(':slug')
+  @Public()
+  @ApiOperation({ summary: 'Get one tag by its exact slug' })
+  @ApiOkResponse({ type: TagSearchResultDto })
+  @ApiNotFoundResponse({ description: 'No tag with that slug' })
+  findBySlug(@Param('slug') slug: string) {
+    return this.tagsService.findBySlug(slug);
   }
 
   /**
@@ -49,7 +78,7 @@ export class TagsController {
    *
    * There is no slug in the DTO, and that is deliberate rather than an
    * oversight. The slug is the tag's identity and it is what appears in
-   * `/?tag=<slug>` URLs, which other people have already linked; renaming it
+   * `/tags/<slug>` URLs, which other people have already linked; renaming it
    * would break every one of them, and a tag knows only the single name it was
    * created under, so there is nothing to redirect from.
    */

@@ -344,12 +344,25 @@ created implicitly by `ensureTags` when a resource is written with it, so a tag
 can never exist unattached to something. `MAX_TAGS_PER_RESOURCE` is 5.
 
 `PATCH /tags/:id` renames the **display form only**. The `slug` is the tag's
-identity and it is what appears in `/?tag=<slug>` URLs, which other people link
+identity and it is what appears in `/tags/<slug>` URLs, which other people link
 to; changing it would break every one of them, and a tag knows only the single
 name it was created under, so there is nothing to redirect from. `UpdateTagDto`
 has no `slug` property, and because the global `ValidationPipe` runs with
 `forbidNonWhitelisted`, a client that tries to set one gets a 400 rather than
 silently rewriting links.
+
+`GET /tags` is the navigation's **most-used cut of twenty**, and that is what it
+still returns with no `?limit=`. `?limit=` exists for callers that want the whole
+vocabulary — the frontend's sitemap does, which is the difference between a tag page
+being discoverable and not. The nav wants "the twenty tags most people here are
+using", so the cap stays a cap there.
+
+`GET /tags/:slug` is an **exact** lookup, backing the frontend's public tag page. It
+is deliberately not the substring match `?query=` does: the typeahead is somebody
+typing a half-remembered prefix, a tag page is not, and two tags answering to one
+URL would leave one of them holding the other's canonical identity. A slug outside
+the slug bounds is a 404 without a query, since `normalizeTags` refuses to create
+one.
 
 `DELETE /tags/:id` **refuses with a 409 while the tag is still attached to any
 resource**, and says to detach it with `PATCH /resources/:id` first. Cascading
