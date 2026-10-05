@@ -1519,6 +1519,102 @@ describe('ResourcesService', () => {
     });
   });
 
+  describe('random', () => {
+    /** The one-row raw pick, as SQL text. */
+    const randomSql = (): string | undefined =>
+      allRawSql().find((text) => text.includes('ORDER BY random()'));
+
+    it('picks one id at random', async () => {
+      prisma.$queryRaw.mockResolvedValue([{ id: 'res_1' }]);
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        _count: { savedResources: 0 },
+      });
+
+      await service.random();
+
+      expect(randomSql()).toContain('ORDER BY random()');
+      expect(randomSql()).toContain('LIMIT 1');
+    });
+
+    /*
+     * The reason this is two round trips rather than one raw query.
+     *
+     * Selecting every column in SQL would mean reimplementing the contributor
+     * join, the anonymity rule and the display-name resolution — the rule that
+     * must exist exactly once. So it picks an id and re-reads through the ordinary
+     * `resourceInclude`.
+     */
+    it('re-reads the picked id through the ordinary include', async () => {
+      prisma.$queryRaw.mockResolvedValue([{ id: 'res_1' }]);
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        _count: { savedResources: 4 },
+      });
+
+      const result = await service.random();
+
+      const [[arg]] = prisma.resource.findUnique.mock.calls as unknown as [
+        [{ where: { id: string }; include: unknown }],
+      ];
+      expect(arg.where).toEqual({ id: 'res_1' });
+      // Not undefined, and not a hand-built select: the shared read shape, which
+      // is what carries tags, the contributor join and both counts.
+      expect(arg.include).toBeDefined();
+      expect(result.savedCount).toBe(4);
+    });
+
+    it('redacts an anonymous contribution for a stranger', async () => {
+      prisma.$queryRaw.mockResolvedValue([{ id: 'res_1' }]);
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        isAnonymous: true,
+        contributorId: 'user_1',
+        contributor: { id: 'user_1', name: 'Ada' },
+        _count: { savedResources: 0 },
+      });
+
+      const result = await service.random();
+
+      expect(result.contributor).toBeNull();
+      expect(result.contributorId).toBeNull();
+    });
+
+    it('throws NotFoundException on an empty corpus', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+
+      await expect(service.random()).rejects.toThrow(NotFoundException);
+    });
+
+    /*
+     * A row can be deleted between the pick and the read. `findUnique` returns
+     * null for that rather than throwing, so without this the request would go on
+     * to dereference null and answer 500 for what is really an empty site.
+     */
+    it('throws NotFoundException when the picked row is deleted before the read', async () => {
+      prisma.$queryRaw.mockResolvedValue([{ id: 'res_1' }]);
+      prisma.resource.findUnique.mockResolvedValue(null);
+
+      await expect(service.random()).rejects.toThrow(NotFoundException);
+    });
+
+    it('does not filter, because a random resource has no relationship to the viewer', async () => {
+      prisma.$queryRaw.mockResolvedValue([{ id: 'res_1' }]);
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        _count: { savedResources: 0 },
+      });
+
+      await service.random('user_1');
+
+      // The viewer reaches `toResourceResponse` but never the query. Anything
+      // narrowing this would be a claim about the person that is not true.
+      const sql = randomSql() ?? '';
+      expect(sql).not.toContain('WHERE');
+      expect(sql).not.toContain('contributorId');
+    });
+  });
+
   describe('findOne', () => {
     it('returns the resource when found', async () => {
       prisma.resource.findUnique.mockResolvedValue({

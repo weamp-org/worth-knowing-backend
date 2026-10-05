@@ -91,12 +91,12 @@ export class ResourcesController {
   }
 
   /*
-   * The most-saved rail, declared **before** `:id` and that placement is
+   * The two home-page rails, declared **before** `:id` and that placement is
    * load-bearing rather than stylistic. Nest matches routes in declaration order,
    * so a `@Get('top-saved')` below `@Get(':id')` would never be reached —
    * `/resources/top-saved` would be read as a resource whose id is the string
    * "top-saved" and 404 on `findOne`, or worse, be *found* if a row somehow had
-   * that id. Literal paths have to precede the parameterised one.
+   * that id. Both literal paths have to precede the parameterised one.
    */
 
   @Get('top-saved')
@@ -113,6 +113,19 @@ export class ResourcesController {
       query.limit,
       getAuth(request).userId ?? undefined,
     );
+  }
+
+  @Get('random')
+  @Public()
+  @ApiOperation({
+    summary: 'Get one resource at random, for the home page',
+    description:
+      'One row, unfiltered and unranked. There is no cursor and no "more like this" — a random resource has no relationship to who is asking, so a second page of them would be six unrelated rows. A 404 means the site has no resources yet.',
+  })
+  @ApiOkResponse({ type: ResourceResponseDto })
+  @ApiNotFoundResponse({ description: 'There are no resources to choose from' })
+  random(@Req() request: Request) {
+    return this.resourcesService.random(getAuth(request).userId ?? undefined);
   }
 
   @Get(':id')

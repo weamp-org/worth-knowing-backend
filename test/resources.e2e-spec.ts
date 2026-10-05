@@ -1513,7 +1513,7 @@ describe('Resources (e2e)', () => {
   });
 
   /*
-   * The most-saved rail.
+   * The two home-page rails.
    *
    * This block earns its place for one specific reason: **route order**.
    * `GET /resources/:id` matches `/resources/top-saved` as an id of "top-saved",
@@ -1522,8 +1522,8 @@ describe('Resources (e2e)', () => {
    * either order — the failure only exists in the assembled router, so it takes a
    * real HTTP request to see it.
    */
-  describe('GET /resources/top-saved', () => {
-    it('serves it as its own route, not as an :id lookup', async () => {
+  describe('home page rails', () => {
+    it('serves top-saved as its own route, not as an :id lookup', async () => {
       prisma.resource.findMany.mockResolvedValue([
         { id: 'res_1', _count: { savedResources: 7 } },
       ]);
@@ -1541,14 +1541,36 @@ describe('Resources (e2e)', () => {
       ]);
     });
 
+    it('serves random as its own route, not as an :id lookup', async () => {
+      prisma.$queryRaw.mockResolvedValue([{ id: 'res_1' }]);
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        _count: { savedResources: 0 },
+      });
+
+      const response = await asUser('clerk_123')
+        .get('/api/v1/resources/random')
+        .expect(200);
+
+      expect(response.body).toEqual(expect.objectContaining({ id: 'res_1' }));
+    });
+
+    it('404s random on an empty corpus, without touching :id', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+
+      await asUser('clerk_123').get('/api/v1/resources/random').expect(404);
+
+      expect(prisma.resource.findUnique).not.toHaveBeenCalled();
+    });
+
     /*
      * `forbidNonWhitelisted` turning an ignored parameter into a 400.
      *
      * A `?cursor=` that validated and was then dropped would leave a client paging
-     * a list that cannot page, and this route has no `nextCursor` to hand back.
-     * Rejecting it says so instead.
+     * a list that cannot page, and the top-saved route has no `nextCursor` to
+     * hand back. Rejecting it says so instead.
      */
-    it('rejects a cursor rather than ignoring it', async () => {
+    it('rejects a cursor on top-saved rather than ignoring it', async () => {
       await asUser('clerk_123')
         .get('/api/v1/resources/top-saved?cursor=abc')
         .expect(400);
@@ -1568,26 +1590,22 @@ describe('Resources (e2e)', () => {
         .expect(200);
     });
 
-    it('is public', async () => {
+    it('leaves both rails public', async () => {
       prisma.resource.findMany.mockResolvedValue([]);
+      prisma.$queryRaw.mockResolvedValue([{ id: 'res_1' }]);
+      prisma.resource.findUnique.mockResolvedValue({
+        id: 'res_1',
+        _count: { savedResources: 0 },
+      });
 
       // No `x-test-user-id`, so `getAuth` returns no user and the guards have
-      // nothing to admit. The route is `@Public()` and must still answer.
+      // nothing to admit. Both are `@Public()`, and both must still answer.
       await request(app.getHttpServer())
         .get('/api/v1/resources/top-saved')
         .expect(200);
-    });
-
-    it('answers with an empty list, not a 404, when nothing has been saved', async () => {
-      prisma.resource.findMany.mockResolvedValue([]);
-
-      const response = await asUser('clerk_123')
-        .get('/api/v1/resources/top-saved')
+      await request(app.getHttpServer())
+        .get('/api/v1/resources/random')
         .expect(200);
-
-      // The rail being unfillable is a state the home page draws nothing for,
-      // not a fault. A 404 here would read as the route not existing.
-      expect(response.body).toEqual([]);
     });
   });
 });

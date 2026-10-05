@@ -37,6 +37,7 @@ import {
   resourceInclude,
   resourceOrderBy,
   toResourceResponse,
+  type ResourceResponse,
   type ResourceWithRelations,
 } from './resource-read';
 import { DEFAULT_TOP_SAVED } from './dtos/top-saved-query.dto';
@@ -554,6 +555,61 @@ export class ResourcesService {
     });
 
     return rows.map((row) => toResourceResponse(row, viewerId));
+  }
+
+  /**
+   * One resource, chosen at random. Backs "Surprise me" on the home page.
+   *
+   * **Raw SQL for the id, then an ordinary Prisma read for the resource.** Same
+   * two-step `resource-search.ts` documents, for the same reason: `ORDER BY
+   * random()` has no query-builder spelling, and selecting every column in raw SQL
+   * would mean writing the contributor join, the anonymity rule and the
+   * display-name resolution a second time. The anonymity rule in particular must
+   * exist exactly once — so this picks an id and then goes back through
+   * `resourceInclude` and {@link toResourceResponse}, unchanged.
+   *
+   * Two round trips for one row is not a cost worth optimising away against that.
+   *
+   * No filters and no parameters, deliberately. A random resource is the one
+   * surface on the site with no relationship to who is asking, so anything
+   * narrowing it would be a claim about the person that is not true.
+   *
+   * `random()` is a sequential scan, which is the honest cost of not ranking by a
+   * column. It is one row against the whole table, so it stays affordable while
+   * `Resource` is a corpus of shared links; it is not a query to put behind a
+   * paginated listing.
+   */
+  async random(viewerId?: string): Promise<ResourceResponse> {
+    const picked = await this.prisma.$queryRaw<{ id: string }[]>(
+      Prisma.sql`SELECT "id" FROM "Resource" ORDER BY random() LIMIT 1`,
+    );
+
+    const id = picked.at(0)?.id;
+
+    /*
+     * A 404, because the only way to reach it is an empty corpus — and unlike
+     * `GET /resources/:id` this is not a bad id, it is a real answer that happens
+     * to be nothing. It is still a 404 rather than a `null` body: the route
+     * promises one resource, and a client branching on that should not have to
+     * distinguish "absent" from "the server returned something odd".
+     *
+     * Re-read rather than assumed present. The row was there when the id was
+     * picked and can be gone by the time it is fetched — and `findUnique` on a
+     * deleted id returns null rather than throwing, which is why this is a
+     * separate check and not left implicit.
+     */
+    const row = id
+      ? await this.prisma.resource.findUnique({
+          where: { id },
+          include: resourceInclude,
+        })
+      : null;
+
+    if (!row) {
+      throw new NotFoundException('There are no resources to choose from yet.');
+    }
+
+    return toResourceResponse(row, viewerId);
   }
 
   /**

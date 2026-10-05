@@ -29,6 +29,7 @@ const mockResourcesService = {
   findAll: jest.fn(),
   findOne: jest.fn(),
   mostSaved: jest.fn(),
+  random: jest.fn(),
   isMine: jest.fn(),
   update: jest.fn(),
   remove: jest.fn(),
@@ -185,6 +186,31 @@ describe('ResourcesController', () => {
           undefined,
           undefined,
         );
+      });
+    });
+
+    describe('random', () => {
+      it('forwards the viewer', async () => {
+        await controller.random(request);
+
+        expect(mockResourcesService.random).toHaveBeenCalledWith('user_1');
+      });
+
+      it('passes no viewer for a signed-out read', async () => {
+        mockAuth = { userId: null };
+
+        await controller.random(request);
+
+        expect(mockResourcesService.random).toHaveBeenCalledWith(undefined);
+      });
+
+      it('never receives a limit, because there is exactly one row', async () => {
+        await controller.random(request);
+
+        // A `?limit=` here would be accepted by the global pipe's whitelist and
+        // then ignored, which is the same silent-drop the top-saved DTO avoids by
+        // not extending a class that carries one.
+        expect(mockResourcesService.random).toHaveBeenCalledWith('user_1');
       });
     });
   });
