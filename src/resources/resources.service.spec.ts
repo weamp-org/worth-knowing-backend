@@ -1095,6 +1095,58 @@ describe('ResourcesService', () => {
       );
     });
 
+    /**
+     * A contributor's `why` is searchable, and this is the assertion that the
+     * service actually sends the query that does it.
+     *
+     * `resource-search.spec.ts` pins the band in the expression. This pins the
+     * plumbing — that `?q=` reaches that expression as a bound parameter on the
+     * query that is actually sent — because the two fail independently: a service
+     * that stopped passing the needle through would still build a correct query
+     * in isolation and return an empty page.
+     */
+    it('ranks against the contributor`s why as well as the title and tags', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+
+      await service.findAll({ q: 'institutions' });
+
+      const sql = rawSql();
+      expect(sql).toContain('r."why" ILIKE $');
+      expect(prisma.$queryRaw).toHaveBeenCalledWith(
+        expect.objectContaining({ values: valuesContaining('%institutions%') }),
+      );
+    });
+
+    /**
+     * A `why`-only match scores 20, which is above the query's `score > 0` gate,
+     * so the row survives and is returned like any other hit. The service treats
+     * a low score exactly as it treats a high one — relevance is the database's
+     * ordering, not the service's judgement — and this is the assertion that it
+     * does not filter low scorers out on the way back.
+     */
+    it('returns a row that matched only through its why', async () => {
+      prisma.$queryRaw.mockResolvedValue(ranked(['a', 20]));
+      prisma.resource.findMany.mockResolvedValue([row('a')]);
+
+      const result = await service.findAll({ q: 'institutions' });
+
+      expect(result.items.map((item) => item.id)).toEqual(['a']);
+    });
+
+    /**
+     * The other half: nothing matched. A `why` band that matched everything would
+     * still return 200, so the empty-page path is what proves the band is a real
+     * predicate rather than a term that is always true.
+     */
+    it('returns nothing when no band matched, why included', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+
+      await expect(service.findAll({ q: 'zzzzqqqxyzzy' })).resolves.toEqual(
+        expect.objectContaining({ items: [], nextCursor: null }),
+      );
+      expect(prisma.resource.findMany).not.toHaveBeenCalled();
+    });
+
     // The same anonymity rule as the unfiltered Prisma path, expressed in SQL
     // because a `ResourceWhereInput` cannot become a SQL fragment. This is the
     // assertion that keeps the two copies of the rule from drifting apart.

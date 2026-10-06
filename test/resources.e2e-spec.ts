@@ -1091,6 +1091,100 @@ describe('Resources (e2e)', () => {
       );
     });
 
+    /**
+     * A contributor's `why` is searchable, asserted through the HTTP contract.
+     *
+     * The needle is one that appears in no title and no tag, so the ranking query
+     * that answers it can only be doing so on the `why` band. Both raw queries are
+     * checked because the facet counts have to agree with the list beside them —
+     * a count computed without the band would promise rows the list does not show.
+     */
+    it('GET /api/v1/resources?q= matches on the contributor`s why alone', async () => {
+      prisma.$queryRaw.mockImplementation((query: { text: string }) =>
+        query.text.includes('ORDER BY "score"')
+          ? [{ id: 'res_why', score: 20 }]
+          : [{ facet: 'type', value: 'ARTICLE', count: 1 }],
+      );
+      prisma.resource.findMany.mockResolvedValueOnce([
+        {
+          id: 'res_why',
+          ...validBody,
+          contributor: null,
+          isAnonymous: false,
+          tags: [],
+          _count: { savedResources: 0, comments: 0 },
+        },
+      ]);
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/resources?q=institutions')
+        .expect(200);
+
+      expect(
+        (response.body as { items: { id: string }[] }).items.map((i) => i.id),
+      ).toEqual(['res_why']);
+
+      // Both queries carry the band, so the counts describe the same set.
+      const queries = rawQueries();
+      expect(queries).toHaveLength(2);
+      for (const query of queries) {
+        expect(query.text).toContain('r."why" ILIKE $');
+        expect(query.values).toEqual(valuesContaining('%institutions%'));
+      }
+    });
+
+    /**
+     * The other half of the same claim: a needle nothing matches returns an empty
+     * page rather than everything. A `why` band that was accidentally always true
+     * would still return 200, so the empty result is the assertion that matters.
+     */
+    it('GET /api/v1/resources?q= returns an empty page when nothing matches', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/resources?q=zzzzqqqxyzzy')
+        .expect(200)
+        .expect({ items: [], nextCursor: null, facets: zeroFacets() });
+
+      // Nothing ranked, so nothing re-read.
+      expect(prisma.resource.findMany).not.toHaveBeenCalled();
+    });
+
+    /**
+     * A `why` match must not outrank a real match. Score 20 is the lowest band by
+     * construction, and this is the assertion at the HTTP layer that a row which
+     * matched on prose comes back *after* one that matched on its title.
+     */
+    it('GET /api/v1/resources?q= orders a why-match below a title match', async () => {
+      prisma.$queryRaw.mockImplementation((query: { text: string }) =>
+        query.text.includes('ORDER BY "score"')
+          ? [
+              { id: 'res_title', score: 100 },
+              { id: 'res_why', score: 20 },
+            ]
+          : [],
+      );
+      // `findMany` makes no promise about order, so hand them back reversed and
+      // let the service impose the ranked order.
+      const shared = {
+        ...validBody,
+        contributor: null,
+        isAnonymous: false,
+        tags: [],
+        _count: { savedResources: 0, comments: 0 },
+      };
+      prisma.resource.findMany.mockResolvedValueOnce([
+        { id: 'res_why', ...shared },
+        { id: 'res_title', ...shared },
+      ]);
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/resources?q=institutions')
+        .expect(200);
+
+      expect(
+        (response.body as { items: { id: string }[] }).items.map((i) => i.id),
+      ).toEqual(['res_title', 'res_why']);
+    });
+
     it('GET /api/v1/resources?q= rejects a feed cursor', async () => {
       await request(app.getHttpServer())
         .get(
