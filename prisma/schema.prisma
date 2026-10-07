@@ -8,15 +8,585 @@ datasource db {
   provider = "postgresql"
 }
 
+/// Why somebody flagged a resource.
+///
+/// Organised by the *decision* each reason implies for a moderator, not by how the
+/// reporter would describe the problem. A queue sorted by category is only worth
+/// sorting by if the categories separate the actions: "remove this" and "this link is
+/// broken" are different jobs, and lumping them together makes the count unreadable.
+///
+/// `BROKEN_LINK` and `WRONG_RESOURCE` are **not removal cases at all** — the honest
+/// outcome for either is usually a fix. A `why` written carefully for a link that 404s
+/// is worth surfacing, and the product loses something real by throwing it away.
+///
+/// Deliberately **no `DUPLICATE`**, though it is the first category every directory
+/// would have. On this product two different people independently sharing the same link
+/// is the feature working, and each brings a different `why` which is the value — see
+/// `@@unique([contributorId, url])` on `Resource`. A repeat submission by the *same*
+/// contributor is already refused with a 409, so a duplicate report could only ever
+/// be pointing at something that is meant to be there.
+enum ResourceReportReason {
+  /// Advertising, link farming, or content with nothing to do with the site.
+  SPAM
+  /// Personal attacks, slurs, or an attempt to drive somebody off the site.
+  ABUSE
+  /// The link is dead, redirects somewhere unrelated, or serves something unsafe.
+  BROKEN_LINK
+  /// The title, the URL, and the `why` do not describe the same thing.
+  WRONG_RESOURCE
+  /// Does not fit the others; the reporter said more in the detail field.
+  SOMETHING_ELSE
+}
+
+/// Why somebody flagged a comment.
+///
+/// Same organising principle as `ResourceReportReason` — separated by the decision
+/// they imply — but a smaller set, because a comment has no title and no URL that can
+/// be wrong about.
+///
+/// `OFF_TOPIC` is a judgement call rather than a fault: a thread that has drifted is
+/// not broken, and a moderator may reasonably leave it.
+enum CommentReportReason {
+  SPAM
+  ABUSE
+  /// Not about the resource, or not adding to the discussion.
+  OFF_TOPIC
+  SOMETHING_ELSE
+}
+
 enum UserRole {
   USER
   ADMIN
 }
 
+/// Why a username cannot be claimed, even by nobody right now.
+enum ReservedUsernameReason {
+  /// A word we would rather nobody hold: an app route, or a name the product
+  /// itself would be confused with.
+  RESERVED
+  /// A handle somebody claimed and later gave back. Held so the same person
+  /// cannot be pushed off it and have somebody else take it within minutes.
+  RELEASED
+}
+
+enum ResourceType {
+  ARTICLE
+  BOOK
+  COURSE
+  VIDEO
+  PODCAST
+  PLAYLIST
+  TOOL
+  RESEARCH_PAPER
+  DATASET
+  WEBSITE
+  OTHER
+}
+
+enum AccessType {
+  FREE
+  PAID
+  FREEMIUM
+  UNKNOWN
+}
+
 model User {
-  id    String @id
-  name  String
-  email String @unique
+  id String @id
+
+  /// Clerk-owned. Rewritten by `WebhooksService` on every Clerk event.
+  ///
+  /// Null when they have not set one, and deliberately not a placeholder.
+  /// Storing "Anonymous" here collided with the product's own anonymity feature:
+  /// a byline reading "Shared by Anonymous" sits next to one reading "Shared
+  /// anonymously", meaning two entirely different things. Every invented string is
+  /// also a claim we cannot back up.
+  ///
+  /// The display name is resolved on read instead — `name`, then the username
+  /// they claimed here. See `display-name.util.ts`, and note that `/share` gates
+  /// on having a username, so anybody with a contribution always has a fallback.
+  name     String?
+  email    String  @unique
+  imageUrl String?
+
+  /// The three fields above are owned by Clerk, not by us. `WebhooksService`
+  /// rewrites all three on every Clerk event, so nothing in this codebase writes
+  /// them locally — a local write would silently revert. Display name and avatar
+  /// are edited through Clerk's own profile UI.
+  ///
+  /// A username is deliberately *not* one of them. It is a product identity with
+  /// rules we want to enforce in a DTO — a character set, a length, a list of
+  /// words we will not issue — and Clerk's own username field enforces none of
+  /// those. It also means a profile can be resolved from this database alone,
+  /// with no Clerk API call on the request path of a public page.
+  ///
+  /// `username` is the form as typed ("AdaL"), `usernameLower` the normalized
+  /// identity and the only unique one — the same `name`/`slug` shape as `Tag`.
+  /// Both are null until claimed, and many users may be unclaimed at once, which
+  /// Postgres permits because it does not treat NULLs as conflicting.
+  username      String? @db.VarChar(24)
+  usernameLower String? @unique
+
+  bio String? @db.VarChar(280)
+
+  /// Gates the profile page, and nothing else.
+  ///
+  /// It deliberately does not re-attribute anything already shared. Whether a
+  /// contribution carries a name is a decision `ResourcesService.create` makes
+  /// once, at creation, and stores on the resource; this flag only controls
+  /// whether `/u/:username` resolves for anybody but its owner. A private
+  /// profile still shows "Shared by <name>" on the feed — the link is what goes
+  /// away.
+  isProfilePrivate Boolean @default(false)
+
+  createdAt DateTime @default(now())
 
   role UserRole @default(USER)
+
+  /// Standing preference for new contributions. Each Resource records the
+  /// resolved value at creation, so changing this later never rewrites what
+  /// has already been shared.
+  anonymousByDefault Boolean @default(false)
+
+  resources Resource[]
+  collections Collection[]
+  savedResources SavedResource[]
+  comments Comment[]
+  commentReports CommentReport[]
+  resourceReports ResourceReport[]
+}
+
+/// Every username that must not be claimable, whether or not anyone holds it.
+///
+/// Holding released handles is what stops `ada` from being given away, taken
+/// back by somebody else within the hour, and re-registered by the original
+/// owner into a profile that now says something they did not write. The primary
+/// key is the normalized form, so the check a claim does is one lookup.
+model ReservedUsername {
+  usernameLower String                  @id
+  reason        ReservedUsernameReason
+  createdAt     DateTime                @default(now())
+}
+
+model Resource {
+  id         String       @id @default(cuid())
+  title      String       @db.VarChar(200)
+  url        String
+  type       ResourceType
+  accessType AccessType   @default(UNKNOWN)
+  why        String
+  /// When true, public responses withhold the contributor entirely. The
+  /// relation itself is kept, so the contributor can still find and edit the
+  /// resource, and it still becomes NULL if their account is deleted.
+  isAnonymous Boolean      @default(false)
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  /// Set to NULL when the contributor's account is deleted, so their
+  /// contributions survive without being attributable.
+  contributorId String?
+  contributor   User?   @relation(fields: [contributorId], references: [id], onDelete: SetNull)
+
+  tags Tag[]
+
+  // Serves a profile's own listing, `WHERE contributor_id = ? ORDER BY
+  // created_at DESC, id DESC`. The `id` tiebreaker is in the index for the same
+  // reason it is in the ordering: `createdAt` is not unique, and a keyset cursor
+  // over a non-total order skips or repeats rows.
+  //
+  // This replaces a plain `@@index([contributorId])`, which could not serve that
+  // ordering — it would sort every one of the contributor's rows. Nothing else
+  // needed it either: the duplicate-URL check filters on `{ contributorId, url }`
+  // and `@@unique([contributorId, url])` below already covers that prefix.
+  @@index([contributorId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([createdAt])
+  @@index([type, createdAt])
+  // Trigram index backing `GET /resources?q=`. The operator class is why this
+  // entry is not optional bookkeeping: `pg_trgm` has to be installed by
+  // `20261003073257_add_trgm_search`, which Prisma cannot emit for any schema,
+  // and an index Prisma does not know about reads as drift -- the next
+  // `migrate dev` would offer to drop it. Declaring it here is what makes the
+  // schema and the database agree, so that migration stays the only hand-written
+  // one and every later migration is tool-generated again.
+  //
+  // `title` only, and deliberately not `lower(title)`: the ranking queries
+  // `title` un-lowered -- ILIKE is case-insensitive and pg_trgm folds case
+  // itself -- so an index on `lower(title)` would be unusable by the expression
+  // that needs it. `why` is not indexed; it is the lowest-weighted signal and
+  // up to 5000 characters of prose.
+  @@index([title(ops: raw("gin_trgm_ops"))], type: Gin)
+  // One contributor cannot post the same link twice. This is deliberately
+  // *per contributor* and not global: two people independently finding the same
+  // resource worth knowing is the product working, and each brings a different
+  // `why`, which is the value. Only a repeated submission by the author is
+  // noise, and rejecting that discards nothing anybody else wrote.
+  //
+  // `contributorId` is nullable and Postgres does not treat NULLs as
+  // conflicting in a unique index, so rows belonging to a deleted contributor
+  // never block one another — which is right, since nobody can edit them.
+  @@unique([contributorId, url])
+
+  collectionResources CollectionResource[]
+  savedResources SavedResource[]
+  comments Comment[]
+  reports ResourceReport[]
+}
+
+/// A gathering of resources somebody chose to keep together.
+///
+/// A collection is a *curation*, not a folder: the owner is usually saving links
+/// other people shared, and the `why` on each resource is still its original
+/// contributor's. So the owner is deliberately not called `contributor` here —
+/// that name means "the person who wrote this" everywhere else in the schema, and
+/// a collection's owner writes none of the resources in it.
+///
+/// `description` is the curator's reason for the *grouping*, which is the same
+/// kind of judgment as a resource's `why` one level up: a titled list of links
+/// with no reasoning attached is the one thing this product should not render.
+/// Optional, because a plain folder is a legitimate thing to want.
+model Collection {
+  id          String   @id @default(cuid())
+  title       String   @db.VarChar(120)
+  description String?  @db.VarChar(500)
+
+  /// Gates the collection page, and nothing else.
+  ///
+  /// It does not re-attribute anything inside. A resource collected anonymously
+  /// is still redacted when the collection is public — see
+  /// `resources/resource-read.ts`, which both services share for that reason.
+  ///
+  /// Defaults to private, unlike `isProfilePrivate` and `isAnonymous`. Those gate
+  /// something that was already published; this gates something that has not.
+  /// Collecting is a personal act, and publishing it should be a separate
+  /// decision rather than a consequence of making the list.
+  isPrivate Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Cascading, which is the one relation here that does not use `SetNull` the
+  /// way `Resource.contributor` does. A contribution outlives its author because
+  /// its `why` is still worth reading and nobody can be named for it anyway. A
+  /// collection is different: it has no content of its own, only an arrangement
+  /// of somebody's, and with the account gone there is no curator to be curated
+  /// *by*. An ownerless collection could not be listed by any route, so `SetNull`
+  /// would strand rows rather than preserve anything.
+  ownerId String?
+  owner   User?   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  resources CollectionResource[]
+
+  // Serves the owner's own listing, `WHERE owner_id = ? ORDER BY created_at DESC,
+  // id DESC`, keyset-paginated. The `id` tiebreaker is in the index for the same
+  // reason it is in `Resource`'s: `createdAt` is not unique, and a cursor over a
+  // non-total order skips or repeats rows.
+  @@index([ownerId, createdAt(sort: Desc), id(sort: Desc)])
+}
+
+/// Which resources a collection holds.
+///
+/// An explicit join where `Resource.tags` is an implicit one, and the reason is
+/// ordering. Prisma cannot `orderBy` an implicit many-to-many, and "in the order
+/// I added them, newest first" is the only ordering this has — so the assignment
+/// needs to be a row that can be sorted.
+///
+/// The `addedAt` is that order. There is no `position` and no drag-and-drop
+/// reordering: a hand-ordered list is a feature nobody has asked for, and it
+/// would mean every reorder is a write to every row after it.
+model CollectionResource {
+  collectionId String
+  resourceId   String
+  addedAt      DateTime @default(now())
+
+  collection Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  resource   Resource   @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+  /// The same resource cannot be collected twice. This composite is also the
+  /// cursor target for `GET /collections/:id/resources`: a page's position is a
+  /// `(collectionId, resourceId)` pair, and since `collectionId` is already in
+  /// the path the opaque cursor only has to carry the resource id.
+  @@id([collectionId, resourceId])
+
+  // Serves the collection's own listing, `WHERE collection_id = ? ORDER BY
+  // added_at DESC, resource_id DESC`. `resourceId` is the tiebreaker because
+  // `addedAt` is not unique, and a keyset cursor over a non-total order skips or
+  // repeats rows.
+  @@index([collectionId, addedAt(sort: Desc), resourceId(sort: Desc)])
+
+  // Serves the reverse question: which of this resource's owner's collections
+  // already hold it. That is the "is this in a collection?" check on a resource
+  // page, and without this it would be a sequential scan of the whole join table.
+  @@index([resourceId])
+}
+
+/// Free-form and contributor-created. `name` is the display form as typed
+/// ("C++", "Machine Learning"); `slug` is the normalized URL-safe identity and
+/// the only unique one, so "Machine Learning" and "machine-learning" collapse
+/// into a single tag.
+model Tag {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  resources Resource[]
+}
+
+/// A resource somebody bookmarked, with no grouping attached.
+///
+/// Deliberately not a collection. A collection is a *curation* — the owner is
+/// saying "these belong together, and here is why" — while a save is one click
+/// with no such claim. Folding saves into a system-owned "Saved" collection was
+/// considered and rejected: it would make the description meaningless on the one
+/// list everybody has, force every listing query to exclude it, and collide with
+/// the cascade that removes a deleted user's collections.
+///
+/// A saved resource is *independent* of collections. Saving something and later
+/// collecting it leaves both intact, because the bookmark is sometimes the only
+/// copy someone has and removing it without being asked would be magic.
+model SavedResource {
+  userId     String
+  resourceId String
+  savedAt    DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+  /// The same resource cannot be saved twice, which is what makes save and
+  /// unsave idempotent without the service having to read first.
+  @@id([userId, resourceId])
+
+  // Serves the owner's saved list, `WHERE user_id = ? ORDER BY saved_at DESC,
+  // resource_id DESC`. The `resourceId` tiebreaker is in the index for the same
+  // reason it is in the collection listing: `savedAt` is not unique, and a
+  // keyset cursor over a non-total order skips or repeats rows.
+  @@index([userId, savedAt(sort: Desc), resourceId(sort: Desc)])
+
+  // Serves the public count on `ResourceResponseDto.savedCount`, which is read
+  // far more often than any one person's saved list. Without this, counting
+  // savers for a page of resources is a sequential scan per row.
+  @@index([resourceId])
+}
+
+/// A remark on a resource, by somebody who is not its contributor.
+///
+/// The first free-text, public, attributable thing a person can write here. Every
+/// other contribution on this site is a link plus a `why`, so the claim is
+/// checkable against the thing it claims to describe. A comment has no such
+/// anchor — it is prose about a link, under a URL that gets shared — which is why
+/// reporting and admin removal are built alongside it rather than after it, and
+/// why there is no karma here to be farmed.
+///
+/// Deliberately *not* a like/dislike pair. There is no ranking on this site for a
+/// vote to act on — the feed is chronological by choice, see `docs/saved.md` — so
+/// a downvote would be a punishment signal with no mechanical function. The job a
+/// downvote actually does, marking something for removal, is a report.
+model Comment {
+  id         String   @id @default(cuid())
+  body       String   @db.VarChar(2000)
+  createdAt  DateTime @default(now())
+
+  /// Cascading, unlike the author relation below: a comment on a resource that no
+  /// longer exists has no referent, and deleting a resource is a hard delete for
+  /// everybody at once rather than a withdrawal.
+  resourceId String
+  resource   Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+  /// Nullable and `SetNull`, like `Resource.contributor` and for the same reason:
+  /// a comment is somebody's words, and the reasoning that a contribution outlives
+  /// its author because its `why` is still worth reading applies just as much here.
+  /// Clerk deletes accounts on its own schedule, so this is a path that really
+  /// happens rather than a hypothetical one. A response renders `author: null` as
+  /// `[removed]` rather than dropping the row.
+  ///
+  /// Never `Cascade`: deleting an account would take every remark with it, which
+  /// is the opposite of what a deleted contributor's resources do.
+  authorId String?
+  author   User?    @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  /// One level of reply, and one level only.
+  ///
+  /// Reddit's actual reply tree is the thing being declined here, not because
+  /// conversation does not deserve replies — "I disagree with the comment above" is
+  /// the most common thing anybody wants to say — but because a tree needs a cursor
+  /// that carries a materialised path, and "load more" then has to fetch children of
+  /// comments that may not be on screen. Every list in this schema is a keyset page
+  /// over `(createdAt, id)`; a tree would mean rewriting that primitive for a depth
+  /// nobody has asked for.
+  ///
+  /// So replies are stored *flat* and read in the same chronological order as
+  /// everything else, with the parent's text rendered as a quote above the reply.
+  /// The row shape and the cursor are unchanged from an unthreaded list; only the
+  /// rendering differs. A deeper tree, or no replies at all, is both still reachable
+  /// without a breaking change.
+  parentId String?
+  parent   Comment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: SetNull)
+  replies  Comment[] @relation("CommentReplies")
+
+  // Serves the listing, `WHERE resource_id = ? ORDER BY created_at DESC, id DESC`,
+  // keyset-paginated like every other list here. The `id` tiebreaker is in the index
+  // for the same reason it is everywhere else: `createdAt` is not unique, and a
+  // keyset cursor over a non-total order skips or repeats rows.
+  //
+  // This also covers `resourceId` on its own, so the public `commentCount` on
+  // `ResourceResponseDto` — a `_count` grouped by this column — needs no index of
+  // its own. The same prefix that made `@@index([contributorId])` redundant in
+  // `Resource` applies here.
+  @@index([resourceId, createdAt(sort: Desc), id(sort: Desc)])
+
+  // Serves the `SetNull` above. Postgres does not index the referencing side of a
+  // foreign key, so removing a parent comment with replies scans the whole table
+  // without this. Comments are the largest table this schema is likely to grow —
+  // every resource can have many, unlike collections or saves — so the scan is the
+  // real cost rather than a hypothetical one.
+  @@index([parentId])
+
+  reports CommentReport[]
+}
+
+/// Why somebody flagged a comment.
+///
+/// This is what a dislike would have been, and the reason it is a report instead is
+/// written up in `docs/comments.md`: there is no ranking on this site for a vote to
+/// act on, so a downvote has no mechanical function and only punishes. The job a
+/// downvote actually does — putting something in front of a person who can remove it
+/// — is this.
+model CommentReport {
+  reporterId String
+  commentId  String
+  createdAt  DateTime @default(now())
+
+  /// When a moderator looked at this and decided the comment stays.
+  ///
+  /// Set on **every** report for a comment at once, not on one row, because a
+  /// comment five people reported is five rows — dismissing one of them would leave
+  /// four still queued, which is to say the queue could never actually be worked
+  /// through. A dismissal is a decision about the comment, not about one person's
+  /// report of it.
+  ///
+  /// **Not** a deletion. The comment is untouched and the rows are kept, which is
+  /// what makes this reversible: un-dismissing is `dismissedAt = null` rather than an
+  /// INSERT to undo. Deliberately no `dismissedBy` — there is no audit surface to
+  /// read it back on, and a column nobody queries is a claim about accountability
+  /// this product does not make.
+  ///
+  /// Null on every row either queue returns: both list routes filter on it, so a
+  /// dismissed report is invisible rather than shown-and-greyed.
+  ///
+  /// Per `(target, reporter)` row, and reporting something again reopens it — for
+  /// **anybody**, which for the same reporter takes an explicit `updateMany` after the
+  /// insert. That is not redundant: the composite primary key makes `skipDuplicates` a
+  /// silent no-op for a repeat, so without it a reader who reports, sees a moderator
+  /// keep it, and reports it again is told it worked and is quietly ignored.
+  ///
+  /// That reopen also re-stamps `createdAt`, and that half is load-bearing: both queues
+  /// order by `createdAt DESC`, so reopening without re-stamping puts the fresh report
+  /// at the *bottom* of the queue under everything filed since — reported, and never
+  /// seen. Both queues therefore order by when somebody **last** said it was worth a
+  /// look, not by when it first was.
+  dismissedAt DateTime?
+
+  /// Optional, and capped short. **The category is required and this is not**, and
+  /// the split is deliberate: the category is what makes a moderator's queue sortable,
+  /// while a required wall of free text would be exactly the friction that stops
+  /// somebody reporting the thing they already know is wrong.
+  detail String? @db.VarChar(500)
+
+  /// Required, and why — see `ResourceReportReason` for why there is no `DUPLICATE`.
+  reason CommentReportReason
+
+  /// Cascading, unlike `Comment.authorId`. A report exists only to point at a
+  /// comment; when the comment is gone there is nothing left to act on, and a queue
+  /// of reports about content that no longer exists is worse than an empty one.
+  comment Comment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  /// Cascading, because a report belongs to the person who made it. This is the one
+  /// place an account deletion removes something another person caused, and that is
+  /// correct: the row is the reporter's own note, not shared state.
+  reporter User @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+
+  /// The same person cannot report the same comment twice. This is what makes
+  /// reporting idempotent without the service reading first, and it also stops one
+  /// account from padding a comment's report count to make it look worse than it is.
+  @@id([reporterId, commentId])
+
+  // Serves "how many people flagged this comment", which the admin queue groups by.
+  @@index([commentId])
+
+  // Serves the queue itself, `ORDER BY created_at DESC, reporter_id DESC,
+  // comment_id DESC`. `createdAt` is not unique, so a keyset cursor over a
+  // non-total order skips or repeats rows — and both trailing columns are needed for
+  // a *total* order, since `reporterId` alone repeats across a person's own reports.
+  @@index([createdAt(sort: Desc), reporterId(sort: Desc), commentId(sort: Desc)])
+}
+
+/// Why somebody flagged a resource.
+///
+/// Deliberately a second table rather than one polymorphic `Report` with a nullable
+/// `resourceId` *or* `commentId`, which was the first design and is worth recording
+/// because the reason is not obvious.
+///
+/// The nullable version cannot work. Postgres makes `PRIMARY KEY` columns implicitly
+/// `NOT NULL`, so a target cannot be nullable in a composite key; and a plain
+/// `@@unique([reporterId, resourceId])` does nothing for a comment report, because
+/// Postgres treats NULLs as *distinct* in a unique index rather than as conflicting
+/// (the same fact that makes `@@unique([contributorId, url])` above permissive where
+/// it needs to be). So the unified table would have had to enforce idempotency in
+/// application code — a read-then-write, which loses the race the way a primary key
+/// does not — and the whole point of keying reports on `(target, reporter)` is that
+/// the database refuses the duplicate.
+///
+/// Two tables cost a near-duplicated model and two near-duplicated service methods.
+/// In exchange the cascade and the idempotency both stay enforced by the database,
+/// which is how every other invariant in this schema works.
+model ResourceReport {
+  reporterId String
+  resourceId String
+  createdAt  DateTime @default(now())
+
+  /// When a moderator looked at this and decided the contribution stays.
+  ///
+  /// Set on every report for a resource at once, for the same reason as
+  /// `CommentReport.dismissedAt`: a resource five people reported is five rows, and
+  /// dismissing one of them would leave the queue no emptier.
+  ///
+  /// Worth being explicit that dismissing and removing are different actions. A
+  /// `BROKEN_LINK` report on a careful `why` is very often a fix rather than a
+  /// deletion, and dismissal is how a moderator says "seen, keeping it".
+  dismissedAt DateTime?
+
+  /// Optional, and capped short, for the same reasons as `CommentReport.detail`: a
+  /// required free-text field is a wall in front of somebody who plainly knows
+  /// something is wrong, and a report is a complaint rather than a second
+  /// contribution.
+  detail String? @db.VarChar(500)
+
+  /// Required, and the reason a queue can be sorted at all. Free text alone would mean
+  /// a moderator reads every report individually before being able to group them,
+  /// which is what makes a queue expensive to work through.
+  reason ResourceReportReason
+
+  /// Cascading. A report exists only to point at a resource, and a resource deletion
+  /// is a hard delete for everyone — so the reports go with it rather than piling up
+  /// in a queue as rows nobody can act on.
+  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+  /// Cascading, because the row is the reporter's own note rather than shared state.
+  reporter User @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+
+  /// The same person cannot report the same resource twice, which is what makes
+  /// reporting idempotent and stops one account from padding a resource's report
+  /// count to make it look worse than it is.
+  ///
+  /// Actor-first, matching `CommentReport` and `SavedResource`. Both orders exist in
+  /// this schema (`CollectionResource` is target-first), so the point is that the two
+  /// report tables agree with each other.
+  @@id([reporterId, resourceId])
+
+  // Serves "how many people flagged this resource", which the admin queue groups by.
+  @@index([resourceId])
+
+  // Serves the queue, `ORDER BY created_at DESC, reporter_id DESC,
+  // resource_id DESC`. Both trailing columns are load-bearing for the same reason as
+  // in `CommentReport`: `createdAt` is not unique and neither is `reporterId` alone.
+  @@index([createdAt(sort: Desc), reporterId(sort: Desc), resourceId(sort: Desc)])
 }

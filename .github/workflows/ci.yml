@@ -3,7 +3,11 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    # `develop` is included because work lands there directly rather than
+    # through a PR, so this is the only automated check a push gets. Husky
+    # covers formatting on staged files; nothing else would catch a typecheck,
+    # test or build failure before it reaches everyone pulling the branch.
+    branches: [main, develop]
 
 jobs:
   ci:

@@ -7,9 +7,72 @@ NestJS 11 API for Worth Knowing, with Clerk authentication, Prisma ORM, role-bas
 - **Authentication** — Clerk-powered via `@clerk/express` with global middleware, configurable guards, and auto-provisioning of local user records on first sign-in
 - **Authorization** — Role-based access control with `@Roles()` decorator and `RolesGuard` (`USER` / `ADMIN` roles)
 - **Database** — Prisma v7 with PostgreSQL via `@prisma/adapter-pg`, auto-generated typed client, migration workflow
+- **Resources** — Share a specific resource with a `why`, plus free-form tags, anonymous sharing, and keyset-paginated browsing
+- **Collections** — Gather resources into a titled, optionally described list; private by default, curated from anything on the site
+- **Saved resources** — Bookmark any resource in one click, independent of collections; a public save count on every resource response
+- **Comments** — A flat, chronological thread per resource with one level of reply; public to read, authored and removable by its author or an admin
+- **Reporting** — Any signed-in reader can flag a resource or a comment; the queues at `/resource-reports` and `/comment-reports` are admin-only and never name reporters
+
+### Comments
+
+Discussion on a resource, under `/resources/:id`. One flat list per resource, newest
+first, with replies stored flat and rendered as a quote above the reply.
+
+**Deliberately no like and no dislike.** There is no ranking on this site for a vote
+to act on — the feed is chronological and sort-by-saved is refused on purpose — so a
+downvote would have no mechanical function and would only punish people for sharing
+what they found worth knowing. The job a downvote actually does, flagging something
+for removal, is `POST .../:id/report`.
+
+Replies are **one level and stored flat**: a real tree needs a cursor carrying a
+materialised path, which would mean rewriting the keyset primitive every list here
+depends on. A comment **outlives its author** (`authorId` is nullable and sets null),
+so a deleted account's remarks stay and read as removed rather than anonymous.
+
+Reporting works on both a **contribution** and a **comment**, and a contribution is the
+higher-leverage of the two: a bad comment is one person's remark under one page, while a
+bad link gets shared onward to people who never saw the flag. Both are idempotent,
+neither can be filed on your own, and neither is **visible to anybody but a moderator**
+— including the author. The queues are admin-only and one row per report; reporters are
+never named, and an anonymously shared contribution is still redacted in the queue.
+
+There is **no automatic hiding at N reports** and no karma. Auto-hide lets a pile-on
+make a comment disappear with no human deciding.
+
+See [docs/comments.md](docs/comments.md).
+
+### Saved resources
+
+A bookmark with no grouping attached — one click, and the resource lands on
+`/saved`. **Deliberately not a system-owned "Saved" collection**: a collection is a
+curation with a reason for why its contents belong together, and a bookmark has
+no such claim, so folding them together would make `description` vacuous on the
+one list everybody has.
+
+Saving and collecting are **independent**. Saving something and later filing it in
+a collection leaves both intact, because the bookmark is sometimes the only copy
+somebody has. See [docs/saved.md](docs/saved.md).
+
+Every route under `/saved` requires a session — a bookmark list is the most
+private thing a person has here, and unlike a resource or a profile there is no
+public version of it. `savedCount`, by contrast, is public and sits on every
+resource response; it is a signal of _interest_, not of quality.
+
+There is deliberately **no sort-by-saved on any paginated list**, because paging by
+an aggregate whose value changes while you page through it is genuinely hard, and
+ranking the whole feed by saves would bury the newest contribution the moment
+anybody saves anything.
+
+There **is** a fixed most-saved rail on the home page — a top-N with no cursor,
+which is the one case that objection does not reach. It is not reachable as a
+`sort`, it cannot page, and it skips resources nobody has saved rather than
+presenting a zero-saved row under a "Most saved" heading. Sorting beyond that
+belongs on a filtered view, opt-in — see [docs/saved.md](docs/saved.md).
+
+- **Saved resources** — Bookmark any resource in one click, independent of collections; a public save count on every resource response
 - **REST API** — Global `/api/v1` prefix, users CRUD scaffold, `ValidationPipe` with whitelist/transform (with implicit conversion)
 - **Webhooks** — Clerk webhook handler for `user.created` / `user.updated` / `user.deleted` events with signature verification
-- **Rate Limiting** — `@nestjs/throttler`, 100 requests/min per user
+- **Rate Limiting** — `@nestjs/throttler`, 100 requests/min per user, tightened to 10/hour on comment creation and both kinds of report
 - **Logging** — Structured JSON logging with `nestjs-pino`, request/response auto-logging, request ID propagation, sensitive header redaction, and a global exception filter
 - **Documentation** — Swagger UI at `/api/v1/documentation` (dev only), auto-generated from decorators and JSDoc
 - **Testing** — Jest unit tests (with mocked Prisma) and Supertest e2e tests
@@ -44,11 +107,19 @@ docker compose up -d
 # 5. Run database migrations
 pnpm prisma migrate dev
 
-# 6. Start the development server
+# 6. Optional: seed some resources so the feed has something in it
+pnpm seed:resources
+
+# 7. Start the development server
 pnpm start:dev
 ```
 
 The API is now available at `http://localhost:3000/api/v1`. Swagger docs at `http://localhost:3000/api/v1/documentation`.
+
+`pnpm seed:resources` gives you 19 fictional resources with tags, spread over a
+month so pagination is worth testing. It deletes and re-inserts only rows whose
+id starts with `seed-`, so re-running it is safe and never touches a real
+contribution.
 
 ## Docker setup
 
@@ -104,42 +175,78 @@ worth-knowing-backend/
 ├── compose.yaml                    # Docker Compose (PostgreSQL 18)
 ├── prisma.config.ts                # Prisma config (dotenv + defineConfig)
 ├── prisma/
-│   ├── schema.prisma               # Database schema (User model, UserRole enum)
+│   ├── schema.prisma               # Database schema (User, Resource, Tag, Collection)
 │   └── migrations/                 # Migration history
 ├── src/
 │   ├── main.ts                     # Entry point (global prefix, Clerk, CORS, Swagger, ValidationPipe)
 │   ├── app.module.ts               # Root module (imports all features)
 │   ├── app.controller.ts           # Root controller (GET /api/v1 health)
 │   ├── app.service.ts              # Root service
+│   ├── validation.ts               # Shared ValidationPipe options
 │   ├── clerk-auth/
-│   │   └── clerk-auth.guard.ts     # Clerk authentication guard
+│   │   ├── clerk-auth.guard.ts     # Clerk authentication guard
+│   │   └── current-user.decorator.ts # @CurrentUserId()
 │   ├── public/
 │   │   └── public.decorator.ts     # @Public() — bypass auth on routes
 │   ├── roles/
 │   │   ├── roles.decorator.ts      # @Roles() — require specific roles
 │   │   └── roles.guard.ts          # Roles authorization guard
+│   ├── pagination/
+│   │   └── cursor.util.ts          # Opaque keyset cursor encode/decode
 │   ├── logging/
-│   │   ├── pino.config.ts         # Pino configuration (structured JSON, redaction, serializers)
-│   │   └── logging.middleware.ts  # Request ID propagation to response header
+│   │   ├── pino.config.ts          # Pino configuration (structured JSON, redaction, serializers)
+│   │   ├── logging.middleware.ts   # Request ID propagation to response header
+│   │   └── routes.ts               # ALL_ROUTES wildcard shared by both middlewares
 │   ├── filters/
 │   │   └── global-exception.filter.ts # Global exception filter with Prisma error translation
 │   ├── prisma/
 │   │   ├── prisma.module.ts        # Global Prisma module
 │   │   └── prisma.service.ts       # PrismaClient with adapter-pg
+│   ├── resources/
+│   │   ├── resources.module.ts
+│   │   ├── resources.controller.ts      # /api/v1/resources
+│   │   ├── resource-reports.controller.ts # /api/v1/resource-reports (admin only)
+│   │   ├── resources.service.ts
+│   │   ├── resource-read.ts        # Shared read shape, redaction, profilePath
+│   │   ├── report-read.ts           # Queue read shape, report count, redaction
+│   │   └── dtos/
+│   ├── tags/
+│   │   ├── tags.module.ts
+│   │   ├── tags.controller.ts      # /api/v1/tags
+│   │   ├── tags.service.ts
+│   │   ├── slugify.util.ts
+│   │   └── dtos/
+│   ├── collections/
+│   │   ├── collections.module.ts
+│   │   ├── collections.controller.ts # /api/v1/collections
+│   │   ├── collections.service.ts
+│   │   └── dtos/
+│   ├── saved/
+│   │   ├── saved.module.ts
+│   │   ├── saved.controller.ts     # /api/v1/saved (all authenticated)
+│   │   ├── saved.service.ts
+│   │   └── dtos/
+│   ├── comments/
+│   │   ├── comments.module.ts
+│   │   ├── comments.controller.ts       # /api/v1/resources/:resourceId/comments
+│   │   ├── comment-reports.controller.ts # /api/v1/comment-reports (admin only)
+│   │   ├── comments.service.ts
+│   │   ├── comment-read.ts         # Read shape, isMine, quote truncation
+│   │   └── dtos/
 │   ├── users/
 │   │   ├── users.module.ts
-│   │   ├── users.controller.ts     # CRUD: /api/v1/users
+│   │   ├── users.controller.ts     # /api/v1/users/me/* and /api/v1/users/:username
 │   │   ├── users.service.ts
+│   │   ├── username.util.ts
+│   │   ├── display-name.util.ts    # Display name, profilePath resolution
 │   │   └── dtos/
-│   │       ├── create-user.dto.ts
-│   │       └── update-user.dto.ts
 │   └── webhooks/
 │       ├── webhooks.module.ts
 │       ├── webhooks.controller.ts  # POST /api/v1/webhooks/clerk
 │       └── webhooks.service.ts     # Clerk webhook event handlers
 ├── test/
 │   ├── jest-e2e.json               # E2E Jest config
-│   └── app.e2e-spec.ts
+│   └── *.e2e-spec.ts
 ├── .husky/                         # Git hooks (created on pnpm install)
 └── secrets/                        # Docker secrets (gitignored, see secrets/*.txt.example)
 ```
@@ -175,20 +282,181 @@ The project uses two env files loaded in order: `.env.local` (local overrides, g
 | `pnpm test:cov`           | Run unit tests with coverage                         |
 | `pnpm prisma generate`    | Regenerate Prisma client after schema changes        |
 | `pnpm prisma migrate dev` | Create and apply a new migration                     |
+| `pnpm seed:resources`     | Seed a dev set of resources, tags and contributors   |
 
 ## API overview
 
 All endpoints are prefixed with `/api/v1`.
 
-| Method   | Path              | Auth                   | Description          |
-| -------- | ----------------- | ---------------------- | -------------------- |
-| `GET`    | `/`               | Public                 | Service health       |
-| `GET`    | `/users`          | Authenticated          | List all users       |
-| `GET`    | `/users/:id`      | Authenticated          | Get user by ID       |
-| `POST`   | `/users`          | Authenticated          | Create a user        |
-| `PATCH`  | `/users/:id`      | Authenticated          | Update a user        |
-| `DELETE` | `/users/:id`      | Admin only             | Delete a user        |
-| `POST`   | `/webhooks/clerk` | Public (skip throttle) | Clerk webhook events |
+| Method   | Path                                     | Auth                   | Description                                                              |
+| -------- | ---------------------------------------- | ---------------------- | ------------------------------------------------------------------------ |
+| `GET`    | `/`                                      | Public                 | Service health                                                           |
+| `GET`    | `/tags`                                  | Public                 | Search tags                                                              |
+| `PATCH`  | `/tags/:id`                              | Admin only             | Rename a tag                                                             |
+| `DELETE` | `/tags/:id`                              | Admin only             | Delete an unused tag                                                     |
+| `GET`    | `/resources`                             | Public                 | List resources; `?q=` searches, `?sort=` orders; returns `facets` counts |
+| `GET`    | `/resources/:id`                         | Public                 | One resource                                                             |
+| `GET`    | `/resources/:id/mine`                    | Authenticated          | Did you contribute it                                                    |
+| `POST`   | `/resources`                             | Authenticated          | Share a resource (409 if you already shared that link)                   |
+| `PATCH`  | `/resources/:id`                         | Contributor or admin   | Update a resource                                                        |
+| `DELETE` | `/resources/:id`                         | Contributor or admin   | Delete a resource                                                        |
+| `GET`    | `/saved`                                 | Authenticated          | Your own saved resources, newest saved first                             |
+| `GET`    | `/saved/:resourceId`                     | Authenticated          | Did you save this resource                                               |
+| `POST`   | `/saved`                                 | Authenticated          | Save a resource (idempotent)                                             |
+| `DELETE` | `/saved/:resourceId`                     | Authenticated          | Remove a resource from your saved list                                   |
+| `GET`    | `/collections/me`                        | Authenticated          | Your own collections                                                     |
+| `GET`    | `/collections/:id`                       | Public                 | One collection (404 if private and not yours)                            |
+| `GET`    | `/collections/:id/resources`             | Public                 | A collection's contents, newest collected first                          |
+| `POST`   | `/collections`                           | Authenticated          | Create a collection (private unless you say otherwise)                   |
+| `PATCH`  | `/collections/:id`                       | Owner or admin         | Update a collection                                                      |
+| `DELETE` | `/collections/:id`                       | Owner or admin         | Delete a collection                                                      |
+| `POST`   | `/collections/:id/resources`             | Owner                  | Add a resource (idempotent)                                              |
+| `DELETE` | `/collections/:id/resources/:resourceId` | Owner                  | Remove a resource from a collection                                      |
+| `GET`    | `/users/me/settings`                     | Authenticated          | Your own settings                                                        |
+| `GET`    | `/users/me/profile`                      | Authenticated          | Your own profile                                                         |
+| `PATCH`  | `/users/me/profile`                      | Authenticated          | Update your profile                                                      |
+| `GET`    | `/users/:username`                       | Public                 | Somebody's public profile                                                |
+| `POST`   | `/webhooks/clerk`                        | Public (skip throttle) | Clerk webhook events                                                     |
+
+The template's `POST /users`, `GET /users`, `GET /users/:id`, `PATCH
+/users/:id` and `DELETE /users/:id` were all removed.
+
+- Users are provisioned automatically by `ClerkAuthGuard`, so `POST /users`
+  had nobody to serve.
+- `name`, `email` and `imageUrl` are owned by Clerk — `WebhooksService`
+  overwrites all three on every Clerk event, so a local write would silently
+  revert. `GET /users` also returned every signed-in caller a list of
+  everyone's email addresses.
+- `DELETE /users/:id` is intentionally absent. It is unreachable from the
+  product and un-undoable: deleting a user sets `contributorId` to NULL on
+  every resource they contributed, permanently dropping their name from all of
+  it. Moderation should be designed with the reporting and reputation model it
+  needs, not inherited as a raw endpoint.
+
+`UserRole.ADMIN` is still meaningful — it widens `PATCH` and `DELETE` on a
+resource from its contributor to any resource — so `pnpm user:set-role` still
+has a purpose. See the note on `UsersController`.
+
+### Tags
+
+Contributors never write tags directly. There is no `POST /tags`: a tag is
+created implicitly by `ensureTags` when a resource is written with it, so a tag
+can never exist unattached to something. `MAX_TAGS_PER_RESOURCE` is 5.
+
+`PATCH /tags/:id` renames the **display form only**. The `slug` is the tag's
+identity and it is what appears in `/tags/<slug>` URLs, which other people link
+to; changing it would break every one of them, and a tag knows only the single
+name it was created under, so there is nothing to redirect from. `UpdateTagDto`
+has no `slug` property, and because the global `ValidationPipe` runs with
+`forbidNonWhitelisted`, a client that tries to set one gets a 400 rather than
+silently rewriting links.
+
+`GET /tags` is the navigation's **most-used cut of twenty**, and that is what it
+still returns with no `?limit=`. `?limit=` exists for callers that want the whole
+vocabulary — the frontend's sitemap does, which is the difference between a tag page
+being discoverable and not. The nav wants "the twenty tags most people here are
+using", so the cap stays a cap there.
+
+`GET /tags/:slug` is an **exact** lookup, backing the frontend's public tag page. It
+is deliberately not the substring match `?query=` does: the typeahead is somebody
+typing a half-remembered prefix, a tag page is not, and two tags answering to one
+URL would leave one of them holding the other's canonical identity. A slug outside
+the slug bounds is a 404 without a query, since `normalizeTags` refuses to create
+one.
+
+`DELETE /tags/:id` **refuses with a 409 while the tag is still attached to any
+resource**, and says to detach it with `PATCH /resources/:id` first. Cascading
+instead would let one call strip a tag from contributions by other people, which
+is the same un-undoable bulk damage that keeps `DELETE /users/:id` from
+existing. Two steps keeps every destructive change attributable to a single
+resource.
+
+This is also the only way a tag can ever disappear. Tags are created implicitly
+and nothing sweeps them, so a tag orphaned by a deleted resource stays in the
+vocabulary forever. That is the reason the route exists.
+
+### Duplicate links
+
+A contributor cannot post the same link twice. `@@unique([contributorId, url])`
+enforces it, and `ResourcesService` reads first so the failure is a 409 with a
+sentence to act on rather than a P2002. The index is what decides: the service
+also catches P2002 on both create and update, so a double-submitted form that
+passes the read and loses the race still comes out as the same 409 instead of a 500.
+
+**The check is per contributor, deliberately.** Two people independently finding
+the same resource worth knowing is the product working — each brings a different
+`why`, and that reasoning is the value. Deduplicating globally would discard one
+person's actual contribution, and any boundary drawn on "same resource" would be
+arbitrary the moment two URLs pointed at one book. Only the author repeating
+themselves is noise, and rejecting that costs nobody else anything.
+
+`PATCH /resources/:id` is checked the same way, against the _contributor's_
+other resources and excluding the one being edited, so re-saving a resource
+without touching its URL is never a conflict. An admin editing somebody else's
+resource is still checked against that contributor's rows, since the index is on
+`(contributorId, url)` and moving a contribution onto a link its own author
+already used is the collision that matters.
+
+`contributorId` is nullable and Postgres does not treat NULLs as conflicting in a
+unique index, so rows belonging to a deleted contributor never block one
+another — correct, since nobody can edit them.
+
+### Who may change a resource
+
+`PATCH /resources/:id` and `DELETE /resources/:id` both admit **the
+contributor or an admin**, and the check lives in `ResourcesService`, not
+behind `@Roles` on the controller.
+
+That placement is forced rather than stylistic. `RolesGuard` short-circuits
+with `if (!requiredRoles) return true`, so a route that declares no `@Roles`
+gets no role lookup at all. A rule admitting either an owner or an admin
+cannot be expressed with that decorator, so nothing would ever ask what role
+the caller has — the service has to.
+
+A contributor being able to delete their own contribution is deliberate: it is
+the only self-service correction the product offers. There is no separate
+"un-attribute" route, because `isAnonymous` already hides the name _and_ keeps
+the resource editable — detaching the contributor outright would only take away
+the author's ability to fix a typo or un-share.
+
+### Collections
+
+A collection is a titled, optionally described gathering of resources somebody
+chose to keep together. The owner is usually saving links _other people_ shared,
+and each resource keeps its own contributor's byline — which is why the relation
+is `owner`, not `contributor`.
+
+They are **private by default**. That is the opposite of `isProfilePrivate` and
+`isAnonymous`, and deliberately so: those gate something already published, while
+this gates something that has not been. Collecting is a personal act, and
+publishing it should be a separate decision rather than a side effect of making
+the list. A private collection is a **404 for anyone but its owner** — never a
+403, which would confirm it exists.
+
+An **optional description**, because a public collection without one is a titled
+list of other people's links with no reasoning attached, and reasoning is the
+whole product. It is where the curator's reason for the _grouping_ lives, the
+same judgment as a resource's `why` one level up.
+
+Three things that are not obvious from the routes:
+
+- **Making a collection public does not deanonymize anything inside it.** The
+  contents go through the same redaction as any public resource read, via
+  `resources/resource-read.ts`, which is why that file is shared rather than
+  copied. Worth knowing: it does give an anonymous resource a second stable
+  URL.
+- **Editing a collection admits an admin; curating one does not.** `PATCH` and
+  `DELETE` are owner-or-admin because a public collection is public content.
+  Adding a resource to somebody's list is owner-only — there is no content
+  reason for an admin to arrange somebody's reading list.
+- **Any resource can be collected, not only your own.** A collection of only
+  your own posts would be a worse version of your profile page.
+
+Contents are keyset-paginated over `CollectionResource` ordered by `addedAt`,
+not over `Resource` by its own `createdAt` — a collection needs the order things
+were _collected_, not the order they were _shared_. That needs a compound cursor,
+because `resourceId` alone is not unique. See
+[docs/collections.md](docs/collections.md) for the full walkthrough.
 
 ## Auth model
 
@@ -204,8 +472,11 @@ See [docs/auth.md](docs/auth.md) for a detailed walkthrough.
 ## Development
 
 - **Add a new resource** — See [docs/new-resource.md](docs/new-resource.md) for a step-by-step guide
+- **Collections** — See [docs/collections.md](docs/collections.md) for the API, the visibility rules, and why the anonymity redaction is shared
+- **Saved resources** — See [docs/saved.md](docs/saved.md) for the bookmark list, why it is not a collection, and why there is no sort-by-saved
 - **Database changes** — Edit `prisma/schema.prisma`, run `pnpm prisma migrate dev`, then `pnpm prisma generate`
 - **Testing** — See [docs/testing.md](docs/testing.md) for patterns and conventions
+- **Logging** — See [docs/logging.md](docs/logging.md) for the middleware route pattern, `originalUrl` vs `req.url`, and known limitations
 
 ## Deployment
 

@@ -40,9 +40,58 @@ request → is @Public()? → yes → allow
        → no → fetch user from Clerk API → create local User record → allow
 ```
 
-**Auto-provisioning detail:** When a user authenticates for the first time, their Clerk user ID isn't in your database. The guard fetches the user from Clerk via `clerkClient.users.getUser(userId)`, extracts `fullName` (or `username`) and `primaryEmailAddress`, and creates a local `User` record with role `USER`. Subsequent requests hit the database directly.
+**Auto-provisioning detail:** When a user authenticates for the first time, their Clerk user ID isn't in your database. The guard fetches the user from Clerk via `clerkClient.users.getUser(userId)`, extracts `fullName` (or `username`), `primaryEmailAddress`, and the profile `imageUrl`, and creates a local `User` record with role `USER`. Subsequent requests hit the database directly.
 
 An error is thrown if the Clerk user record is missing an email address.
+
+The guard is **create-only**: once a local record exists it is never updated from this path, and no Clerk API call is made at all. Keeping Clerk-owned fields current is the webhook's job (see `docs/webhooks.md`) — `user.updated` refreshes `name`, `email`, and `imageUrl` together.
+
+`name`, `email` and `imageUrl` are **not writable through the REST API at all**. They are Clerk-owned, and the template's `POST /users` and `PATCH /users/:id` have been removed precisely because a local write would be reverted on the next Clerk event without warning. There is no user DTO that accepts them, so sending any of the three in a request body is rejected with a 400 by the global `ValidationPipe` (`forbidNonWhitelisted: true`). The two user-writable surfaces are `PATCH /users/me/settings` (`anonymousByDefault`) and `PATCH /users/me/profile` (username, bio, profile privacy) — see `docs/profiles.md`. Pre-existing rows are backfilled on the user's next `user.updated` event.
+
+---
+
+## Keeping Clerk-owned fields current
+
+`ClerkAuthGuard` is **create-only**: it provisions a user on their first
+authenticated request and never revisits them — `if (existingUser) return`.
+
+That is deliberate. The guard runs on **every authenticated request**, so
+refreshing `name` and `imageUrl` there would mean a Clerk API call per API call:
+latency on everything, rate-limit exposure, and the app's availability coupled to
+Clerk's. For a field that changes a handful of times in a user's life, that is a
+bad trade.
+
+So the responsibilities split:
+
+| Concern                                | Owner                                |
+| -------------------------------------- | ------------------------------------ |
+| Create the row on first sight          | `ClerkAuthGuard`                     |
+| Keep `name`/`email`/`imageUrl` current | `WebhooksService`, on `user.updated` |
+
+**One writer per field**, and no Clerk call on the request path.
+
+### The cost of that choice
+
+There is exactly one writer, so if the webhook stops, updates stop — and it stops
+_silently_. Every event fails signature verification, the endpoint 400s, and the
+only symptom is a display name that quietly stopped changing. Two things narrow
+that:
+
+- `main.ts` warns at boot if `CLERK_WEBHOOK_SIGNING_SECRET` is missing or still
+  the `.env.local.example` placeholder. It cannot detect a webhook URL that is
+  unreachable from Clerk's servers — a tunnel being down is the other common
+  cause, and is invisible from here — so this narrows the diagnosis rather than
+  ruling it out.
+- `pnpm user:sync <clerk-user-id>` repairs a user by hand: it fetches their
+  current Clerk record and writes the three mirrored fields. Same shape as the
+  existing `pnpm user:set-role`, and it warns if the Clerk record has no name at
+  all, since that writes `null`.
+
+### Why not a TTL refresh instead
+
+The alternative to a webhook is storing `clerkSyncedAt` and refreshing when it is
+stale. That removes the dependency but adds a column, a staleness rule, and
+occasional Clerk calls, for a field that rarely changes. Not worth it yet.
 
 ---
 
@@ -118,24 +167,56 @@ import { UserRole } from '../generated/prisma/enums';
 @UseGuards(ClerkAuthGuard, RolesGuard)
 @Controller('items')
 export class ItemsController {
+  // No `@ApiBearerAuth()` at the class level. A controller with a `@Public()`
+  // route and a class-level bearer security documents every route as
+  // authenticated, which is the mismatch the guards do not have. Annotate the
+  // guarded methods individually instead — `UsersController` does this.
   @Get()
   @Public()
+  @ApiOperation({ summary: 'List items' })
   findAll() {
     /* public */
   }
 
   @Post()
+  @ApiBearerAuth()
   create() {
     /* any authenticated user */
   }
 
   @Delete(':id')
+  @ApiBearerAuth()
   @Roles(UserRole.ADMIN)
   remove() {
     /* admin only */
   }
 }
 ```
+
+### Reading the session on a public route
+
+A `@Public()` route skips `ClerkAuthGuard`, but Clerk's global middleware has
+still parsed the session, so `getAuth(request).userId` is available and is
+sometimes needed — `GET /users/:username` uses it to let an owner see their own
+private profile. This only works because `clerkMiddleware()` runs globally in
+`main.ts`:
+
+```ts
+@Get(':username')
+@Public()
+findByUsername(@Param('username') username: string, @Req() request: Request) {
+  return this.usersService.findByUsername(username, getAuth(request).userId ?? undefined);
+}
+```
+
+The other two callers are `GET /resources`, which resolves anonymity per viewer, and
+`GET /resources/:resourceId/comments`, which sets `isMine` on each comment. Read the
+session even on a public route whenever the answer is per-viewer, or the client gets a
+default that is not a fact — on the comment thread that would mean `isMine` reading
+false for the person who just posted.
+
+The same reason applies to the e2e specs: `getAuth` is mocked with an
+`x-test-user-id` header standing in for the session.
 
 ### Registration
 

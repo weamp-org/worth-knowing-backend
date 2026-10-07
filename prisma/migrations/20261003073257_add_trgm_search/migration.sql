@@ -1,0 +1,36 @@
+-- Trigram matching for resource search.
+--
+-- THE ONE HAND-WRITTEN MIGRATION IN THIS FOLDER. Everything else is emitted by
+-- `prisma migrate dev`. Prisma cannot produce this file for any schema: the
+-- `postgresqlExtensions` preview feature was deprecated in Prisma 6.16.0, and
+-- the schema language has no way to express either a `CREATE EXTENSION` or an
+-- operator-class index. The sanctioned path per Prisma's own v7 documentation is
+-- `migrate dev --create-only`, edit the generated file, `migrate deploy` -- which
+-- is what this is. It still entered the history through the tool, so drift
+-- detection and shadow-database validation apply from this point on.
+--
+-- `postgres:18` (compose.yaml) ships pg_trgm in the image; it just is not
+-- installed by default. IF NOT EXISTS keeps a re-run or a pre-provisioned
+-- database a no-op.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- `title` only, and deliberately not `lower(title)`: the ranking queries
+-- `title` un-lowered (ILIKE is case-insensitive and pg_trgm folds case itself),
+-- so an index on `lower(title)` would not be usable by the expression that
+-- needs it and the search would seq-scan regardless.
+--
+-- One index serves both branches of the ranking -- literal `ILIKE '%q%'` and
+-- `similarity()` -- because gin_trgm_ops supports both with the column as the
+-- left operand.
+--
+-- Named `Resource_title_idx`, which is what Prisma's own `@@index([title(ops:
+-- raw("gin_trgm_ops"))], type: Gin)` in schema.prisma resolves to. Renaming it
+-- to something more descriptive here would need a `map:` on the schema entry to
+-- keep the two in step, and the default name is the one Prisma would have
+-- generated anyway.
+--
+-- `why` is deliberately NOT indexed. It is TEXT of up to 5000 characters, it is
+-- the lowest-weighted signal in the ranking, and a trigram index over that much
+-- prose is a large index for a weak signal. It is matched with a plain ILIKE,
+-- which is a sequential scan on a table this size.
+CREATE INDEX "Resource_title_idx" ON "Resource" USING GIN ("title" gin_trgm_ops);

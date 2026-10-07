@@ -6,6 +6,49 @@ import { Logger, LoggerErrorInterceptor } from 'nestjs-pino';
 import { clerkMiddleware } from '@clerk/express';
 
 import { AppModule } from './app.module.js';
+import { validationPipeOptions } from './validation.js';
+
+/**
+ * Warns when the Clerk webhook cannot possibly be working.
+ *
+ * `ClerkAuthGuard` is create-only by design — it provisions a user on their
+ * first authenticated request and never revisits them — so `name`, `email` and
+ * `imageUrl` are refreshed *only* by the `user.updated` webhook. Nothing else
+ * keeps them current, and nothing else fails if it stops.
+ *
+ * That makes a misconfigured webhook invisible: every event fails signature
+ * verification, the endpoint 400s, and the only symptom is a display name that
+ * quietly stopped updating. Worth a line at boot.
+ *
+ * Checks the secret only. It cannot know whether the webhook URL is actually
+ * reachable from Clerk's servers — a tunnel being down is the other common
+ * cause and is invisible from here — so this narrows the diagnosis rather than
+ * ruling it out.
+ */
+function warnAboutWebhookConfig(configService: ConfigService) {
+  const secret = configService.get<string>('CLERK_WEBHOOK_SIGNING_SECRET');
+
+  if (!secret) {
+    console.warn(
+      '\n  ⚠  CLERK_WEBHOOK_SIGNING_SECRET is not set.\n' +
+        '     Clerk-owned fields (name, email, imageUrl) will never update after a\n' +
+        '     user is created — the guard is create-only and the webhook is the only\n' +
+        '     writer. Repair an existing user with: pnpm user:sync <clerk-user-id>\n',
+    );
+    return;
+  }
+
+  // The value shipped in `.env.local.example`. Copied verbatim and left in
+  // place, which is the realistic way this goes wrong.
+  if (secret.includes('your_webhook_signing_secret')) {
+    console.warn(
+      '\n  ⚠  CLERK_WEBHOOK_SIGNING_SECRET is still the placeholder from\n' +
+        '     .env.local.example, so every webhook will fail verification.\n' +
+        '     Copy the real value from Clerk Dashboard → Webhooks → Signing Secret.\n' +
+        '     Repair an existing user with: pnpm user:sync <clerk-user-id>\n',
+    );
+  }
+}
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -24,16 +67,9 @@ async function bootstrap() {
   app.enableCors({ origin: frontendBaseUrl });
   app.setGlobalPrefix('api/v1');
   app.use(clerkMiddleware());
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-      transformOptions: {
-        enableImplicitConversion: true,
-      },
-    }),
-  );
+  app.useGlobalPipes(new ValidationPipe(validationPipeOptions));
+
+  warnAboutWebhookConfig(configService);
 
   if (!isProduction) {
     const config = new DocumentBuilder()
@@ -44,8 +80,8 @@ async function bootstrap() {
       .build();
 
     const options = {
-      operationIdFactory: (_controllerKey: string, methodKey: string) =>
-        methodKey,
+      operationIdFactory: (controllerKey: string, methodKey: string) =>
+        `${controllerKey}_${methodKey}`,
     };
 
     const documentFactory = () =>

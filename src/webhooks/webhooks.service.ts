@@ -4,6 +4,7 @@ import { verifyWebhook } from '@clerk/express/webhooks';
 import { Request, Response } from 'express';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { clerkDisplayName } from '../users/display-name.util';
 
 const supportedClerkEvents = {
   userCreated: 'user.created',
@@ -20,7 +21,11 @@ export class WebhooksService {
   private async resolveClerkUser(userClerkId: string) {
     const clerkUser = await clerkClient.users.getUser(userClerkId);
 
-    const name = clerkUser.fullName ?? clerkUser.username ?? 'Anonymous';
+    // Shared with `ClerkAuthGuard` rather than copied. The two used to carry the
+    // same `fullName ?? username ?? 'Anonymous'` expression independently, which
+    // meant a user could be provisioned with one name by the guard and a
+    // different one by a later webhook.
+    const name = clerkDisplayName(clerkUser);
     const email =
       clerkUser.primaryEmailAddress?.emailAddress ??
       clerkUser.emailAddresses?.[0]?.emailAddress;
@@ -29,19 +34,20 @@ export class WebhooksService {
       throw new Error(`Clerk user ${userClerkId} is missing an email address`);
     }
 
-    return { name, email };
+    return { name, email, imageUrl: clerkUser.imageUrl };
   }
 
   private async handleUserCreated(userClerkId: string) {
-    const { name, email } = await this.resolveClerkUser(userClerkId);
+    const { name, email, imageUrl } = await this.resolveClerkUser(userClerkId);
 
     await this.prismaService.user.upsert({
       where: { id: userClerkId },
-      update: { name, email },
+      update: { name, email, imageUrl },
       create: {
         id: userClerkId,
         name,
         email,
+        imageUrl,
       },
     });
 
@@ -49,11 +55,11 @@ export class WebhooksService {
   }
 
   private async handleUserUpdated(userClerkId: string) {
-    const { name, email } = await this.resolveClerkUser(userClerkId);
+    const { name, email, imageUrl } = await this.resolveClerkUser(userClerkId);
 
     await this.prismaService.user.update({
       where: { id: userClerkId },
-      data: { name, email },
+      data: { name, email, imageUrl },
     });
 
     this.logger.log(`User with id "${userClerkId}" has been updated`);
