@@ -1770,6 +1770,26 @@ describe('ResourcesService', () => {
       expect(prisma.resource.update).toHaveBeenCalled();
     });
 
+    it('refuses an admin changing isAnonymous on someone else’s resource', async () => {
+      prisma.resource.findUnique.mockResolvedValue(ownedBy('someone_else'));
+      prisma.user.findUnique.mockResolvedValue({ role: UserRole.ADMIN });
+
+      await expect(
+        service.update('res_1', { isAnonymous: false }, 'admin_1'),
+      ).rejects.toThrow(ForbiddenException);
+      expect(prisma.resource.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses an admin anonymizing someone else’s non-anonymous resource', async () => {
+      prisma.resource.findUnique.mockResolvedValue(ownedBy('someone_else'));
+      prisma.user.findUnique.mockResolvedValue({ role: UserRole.ADMIN });
+
+      await expect(
+        service.update('res_1', { isAnonymous: true }, 'admin_1'),
+      ).rejects.toThrow(ForbiddenException);
+      expect(prisma.resource.update).not.toHaveBeenCalled();
+    });
+
     it('refuses a non-owner who is not an admin', async () => {
       prisma.resource.findUnique.mockResolvedValue(ownedBy('someone_else'));
       prisma.user.findUnique.mockResolvedValue({ role: UserRole.USER });

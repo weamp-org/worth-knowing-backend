@@ -829,6 +829,25 @@ export class ResourcesService {
       delete data.isAnonymous;
     }
 
+    // Only the contributor may change anonymity. An admin can moderate other
+    // fields of someone else's resource, but flipping this would silently
+    // deanonymize (or anonymize) another person's contribution, so it is
+    // refused even for admins. The raw owner is read rather than the redacted
+    // response: for anyone but the owner an anonymous row already reports
+    // `contributorId` as null.
+    if (data.isAnonymous !== undefined) {
+      const owner = await this.prisma.resource.findUnique({
+        where: { id },
+        select: { contributorId: true },
+      });
+
+      if (owner?.contributorId !== actorId) {
+        throw new ForbiddenException(
+          'Only the contributor can change anonymity',
+        );
+      }
+    }
+
     // `tags` is absent from a partial update that did not mention it. Setting
     // it unconditionally would silently strip every tag off the resource.
     if (tags !== undefined) {
