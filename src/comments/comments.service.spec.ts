@@ -8,6 +8,7 @@ import { Prisma } from '../generated/prisma/client';
 import { CommentReportReason } from '../generated/prisma/enums';
 
 import { CommentsService } from './comments.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { encodeCursor } from '../pagination/cursor.util';
 import { PARENT_QUOTE_LENGTH } from './comment-read';
@@ -70,13 +71,16 @@ describe('CommentsService', () => {
     user: { findUnique: jest.Mock };
   };
   let role: 'USER' | 'ADMIN';
+  let notifyForComment: jest.Mock;
 
   beforeEach(async () => {
     role = 'USER';
+    notifyForComment = jest.fn();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CommentsService,
+        { provide: NotificationsService, useValue: { notifyForComment } },
         {
           provide: PrismaService,
           useValue: {
@@ -402,6 +406,27 @@ describe('CommentsService', () => {
       const comment = await service.create(RESOURCE, USER, { body: 'Mine.' });
 
       expect(comment.isMine).toBe(true);
+    });
+
+    it('files a notification for the comment, with the resolved parent', async () => {
+      prisma.comment.create.mockResolvedValue(commentRow({ id: 'cmt_9' }));
+
+      await service.create(RESOURCE, USER, { body: 'Worth it.' });
+
+      expect(notifyForComment).toHaveBeenCalledWith({
+        resourceId: RESOURCE,
+        authorId: USER,
+        parentId: null,
+        commentId: 'cmt_9',
+      });
+    });
+
+    it('files nothing when the comment itself fails validation', async () => {
+      await expect(
+        service.create(RESOURCE, USER, { body: '   ' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(notifyForComment).not.toHaveBeenCalled();
     });
   });
 
