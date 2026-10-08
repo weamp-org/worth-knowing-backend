@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { UserRole } from '../generated/prisma/enums';
 import {
   decodeCursor,
@@ -39,7 +40,10 @@ import {
 
 @Injectable()
 export class CommentsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   /**
    * The comments on a resource, newest first, keyset-paginated.
@@ -137,6 +141,17 @@ export class CommentsService {
     const comment = await this.prisma.comment.create({
       data: { resourceId, authorId, body, parentId },
       include: commentInclude,
+    });
+
+    // Filed after the write, never before it: a notification for a comment that
+    // failed to store would point at nothing. Best-effort by design — see
+    // `NotificationsService.notifyForComment` — so the remark can never fail
+    // because its echo did.
+    await this.notifications.notifyForComment({
+      resourceId,
+      authorId,
+      parentId,
+      commentId: comment.id,
     });
 
     return toCommentResponse(comment, authorId);
