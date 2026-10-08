@@ -3,6 +3,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { NotificationType } from '../generated/prisma/enums';
 
 import { NotificationsService } from './notifications.service';
+import { PushService } from './push.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 const USER = 'user_1';
@@ -47,6 +48,7 @@ function notificationRow(overrides: Record<string, unknown> = {}) {
 
 describe('NotificationsService', () => {
   let service: NotificationsService;
+  let push: { sendForNotification: jest.Mock };
   let prisma: {
     notification: {
       findMany: jest.Mock;
@@ -63,6 +65,10 @@ describe('NotificationsService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         NotificationsService,
+        {
+          provide: PushService,
+          useValue: { sendForNotification: jest.fn() },
+        },
         {
           provide: PrismaService,
           useValue: {
@@ -86,6 +92,7 @@ describe('NotificationsService', () => {
 
     service = module.get(NotificationsService);
     prisma = module.get(PrismaService);
+    push = module.get(PushService);
   });
 
   describe('findMine', () => {
@@ -179,6 +186,7 @@ describe('NotificationsService', () => {
           commentId: 'cmt_9',
         },
       });
+      expect(push.sendForNotification).toHaveBeenCalledWith('notif_1');
     });
 
     it('notifies the parent author on a reply', async () => {

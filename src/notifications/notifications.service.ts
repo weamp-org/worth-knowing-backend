@@ -7,6 +7,7 @@ import {
 import { NotificationType } from '../generated/prisma/enums';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { PushService } from './push.service';
 import {
   decodeCursor,
   encodeCursor,
@@ -24,7 +25,10 @@ import { DEFAULT_PAGE_SIZE } from './dtos/list-notifications-query.dto';
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly push: PushService,
+  ) {}
 
   /**
    * The caller's inbox, newest first, keyset-paginated.
@@ -177,7 +181,7 @@ export class NotificationsService {
 
       if (!recipientId || recipientId === args.authorId) return;
 
-      await this.prisma.notification.create({
+      const notification = await this.prisma.notification.create({
         data: {
           type,
           recipientId,
@@ -186,6 +190,11 @@ export class NotificationsService {
           commentId: args.commentId,
         },
       });
+
+      // After the row, never instead of it: push delivers the inbox, and a
+      // delivery failure must not un-file what was earned. Best-effort inside
+      // best-effort — `sendForNotification` never throws either.
+      await this.push.sendForNotification(notification.id);
     } catch (error) {
       // Swallowed, but not silently: the comment this was filed for already
       // succeeded, so failing the request over its echo would be wrong — while

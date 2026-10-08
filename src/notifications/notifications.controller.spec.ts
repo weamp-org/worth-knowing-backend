@@ -3,6 +3,7 @@ import { Reflector } from '@nestjs/core';
 
 import { NotificationsController } from './notifications.controller';
 import { NotificationsService } from './notifications.service';
+import { PushService } from './push.service';
 import { RolesGuard } from '../roles/roles.guard';
 import { ClerkAuthGuard } from '../clerk-auth/clerk-auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
@@ -14,6 +15,12 @@ const mockNotificationsService = {
   markAllRead: jest.fn(),
 };
 
+const mockPushService = {
+  getPublicKey: jest.fn(),
+  subscribe: jest.fn(),
+  unsubscribe: jest.fn(),
+};
+
 describe('NotificationsController', () => {
   let controller: NotificationsController;
 
@@ -22,6 +29,7 @@ describe('NotificationsController', () => {
       controllers: [NotificationsController],
       providers: [
         { provide: NotificationsService, useValue: mockNotificationsService },
+        { provide: PushService, useValue: mockPushService },
         RolesGuard,
         ClerkAuthGuard,
         { provide: Reflector, useValue: { getAllAndOverride: jest.fn() } },
@@ -82,6 +90,43 @@ describe('NotificationsController', () => {
 
       expect(mockNotificationsService.markAllRead).toHaveBeenCalledWith(
         'clerk_123',
+      );
+    });
+  });
+
+  describe('pushPublicKey', () => {
+    it('serves the key', () => {
+      mockPushService.getPublicKey.mockReturnValue('public-key');
+
+      expect(controller.pushPublicKey()).toEqual({
+        publicKey: 'public-key',
+      });
+    });
+  });
+
+  describe('subscribePush', () => {
+    it('forwards the subscription and the caller', async () => {
+      const body = {
+        endpoint: 'https://push.example.com/abc',
+        keys: { p256dh: 'p', auth: 'a' },
+      };
+
+      await controller.subscribePush(body, 'clerk_123');
+
+      expect(mockPushService.subscribe).toHaveBeenCalledWith('clerk_123', body);
+    });
+  });
+
+  describe('unsubscribePush', () => {
+    it('forwards the endpoint and the caller', async () => {
+      await controller.unsubscribePush(
+        { endpoint: 'https://push.example.com/abc' },
+        'clerk_123',
+      );
+
+      expect(mockPushService.unsubscribe).toHaveBeenCalledWith(
+        'clerk_123',
+        'https://push.example.com/abc',
       );
     });
   });

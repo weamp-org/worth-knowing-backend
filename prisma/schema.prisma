@@ -166,6 +166,7 @@ model User {
   resourceReports ResourceReport[]
   notificationsReceived Notification[]
   notificationsCaused Notification[] @relation("NotificationActor")
+  pushSubscriptions PushSubscription[]
 }
 
 /// Every username that must not be claimable, whether or not anyone holds it.
@@ -586,6 +587,36 @@ model Notification {
   // id DESC`, keyset-paginated like every other list here. The `id` tiebreaker
   // is load-bearing for the usual reason: `createdAt` is not unique.
   @@index([recipientId, createdAt(sort: Desc), id(sort: Desc)])
+}
+
+/// One browser's permission to be woken up.
+///
+/// A user has as many rows as they have browsers — phone plus laptop is two
+/// subscriptions, and each gets its own push. The `endpoint` is the push
+/// service's URL for that browser and is globally unique, so it is the key:
+/// re-subscribing the same browser upserts rather than doubling.
+///
+/// Cascading: these rows are permission, not content. Deleting the account
+/// takes its permissions with it, and a subscription for nobody can never
+/// fire — sending always fans out from the recipient's live rows.
+///
+/// `p256dh` and `auth` are the browser's encryption keys for the payload.
+/// Stored as received, never inspected: they are opaque key material, and the
+/// only operation on them is handing them back to `web-push` at send time.
+model PushSubscription {
+  /// The push service's URL for this browser. Globally unique by construction.
+  endpoint String @id
+  p256dh   String
+  auth     String
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  // Serves the fan-out, `WHERE user_id = ?`: every notification sends to all
+  // of the recipient's browsers.
+  @@index([userId])
 }
 
 /// Why somebody flagged a resource.
