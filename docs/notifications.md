@@ -64,3 +64,29 @@ The single-read write is scoped to the caller (`updateMany` on
 leaking neither its existence nor its content. Reading what is already read
 succeeds and re-stamps rather than rejecting: "read" is already the state the
 caller asked for.
+
+## Push delivery
+
+One browser is one `PushSubscription` row, keyed by the push service's
+endpoint: a user on a phone and a laptop is two rows, and every notification
+goes to all of them. Re-subscribing upserts, so toggling push off and on
+cannot stack duplicates; unsubscribing deletes, scoped to the caller.
+
+Sending fans out from the recipient's live rows right after the inbox write —
+after, never instead: push delivers the inbox, and a delivery failure must not
+un-file what was earned. A dead subscription (404/410 from the push service —
+the browser left without saying goodbye) is pruned on sight, so the table
+cannot fill with rows that only ever fail. Anything else warns and moves on.
+
+VAPID keys come from `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and
+`VAPID_SUBJECT` (see `.env.local.example`). Without all three, push stays
+disabled with one loud warning rather than throwing at boot: a fresh clone has
+placeholder keys, and the inbox the pushes would deliver works without them.
+The public key is served to signed-in browsers at
+`GET /notifications/push-public-key`; the private key never leaves the server.
+
+| Route                                      | Purpose                       |
+| ------------------------------------------ | ----------------------------- |
+| `GET /notifications/push-public-key`       | The VAPID public key, or null |
+| `POST /notifications/push-subscriptions`   | Subscribe this browser        |
+| `DELETE /notifications/push-subscriptions` | Forget this browser           |
