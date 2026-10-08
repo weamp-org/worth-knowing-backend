@@ -16,6 +16,7 @@ import { CollectionsModule } from './collections/collections.module.js';
 import { ResourcesModule } from './resources/resources.module.js';
 import { SavedModule } from './saved/saved.module.js';
 import { CommentsModule } from './comments/comments.module.js';
+import { NotificationsModule } from './notifications/notifications.module.js';
 import { TagsModule } from './tags/tags.module.js';
 import { UsersModule } from './users/users.module.js';
 import { WebhooksModule } from './webhooks/webhooks.module.js';
@@ -43,6 +44,7 @@ import { WebhooksModule } from './webhooks/webhooks.module.js';
     UsersModule,
     WebhooksModule,
     CommentsModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [

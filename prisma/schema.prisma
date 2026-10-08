@@ -54,6 +54,17 @@ enum CommentReportReason {
   SOMETHING_ELSE
 }
 
+/// What happened that somebody should hear about.
+///
+/// Two members, and that is the whole V1 surface on purpose: a comment on
+/// something you shared, and a reply to something you said. Anything else —
+/// saves, trends, digests — is engagement optimisation, which this product
+/// explicitly does not do.
+enum NotificationType {
+  COMMENT_ON_RESOURCE
+  REPLY_TO_COMMENT
+}
+
 enum UserRole {
   USER
   ADMIN
@@ -153,6 +164,8 @@ model User {
   comments Comment[]
   commentReports CommentReport[]
   resourceReports ResourceReport[]
+  notificationsReceived Notification[]
+  notificationsCaused Notification[] @relation("NotificationActor")
 }
 
 /// Every username that must not be claimable, whether or not anyone holds it.
@@ -229,6 +242,7 @@ model Resource {
   savedResources SavedResource[]
   comments Comment[]
   reports ResourceReport[]
+  notifications Notification[]
 }
 
 /// A gathering of resources somebody chose to keep together.
@@ -421,6 +435,7 @@ model Comment {
   parentId String?
   parent   Comment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: SetNull)
   replies  Comment[] @relation("CommentReplies")
+  notifications Notification[]
 
   // Serves the listing, `WHERE resource_id = ? ORDER BY created_at DESC, id DESC`,
   // keyset-paginated like every other list here. The `id` tiebreaker is in the index
@@ -517,6 +532,60 @@ model CommentReport {
   // non-total order skips or repeats rows — and both trailing columns are needed for
   // a *total* order, since `reporterId` alone repeats across a person's own reports.
   @@index([createdAt(sort: Desc), reporterId(sort: Desc), commentId(sort: Desc)])
+}
+
+/// One thing one person should hear about.
+///
+/// Written when a comment lands, read by the bell. The row points at the
+/// participants rather than snapshotting their words: the actor's name, the
+/// resource's title and the comment's body are resolved on read, so an edit or
+/// a deletion upstream shows up here instead of embalming a stale copy. The
+/// cost is that a deleted comment leaves a row pointing at nothing — `comment`
+/// is `SetNull` for that reason, and the read renders "a comment" rather than
+/// dropping the row.
+///
+/// Two relations cascade and two do not, and the split is the point:
+/// - `recipient` cascades. An inbox belongs to its owner; deleting the account
+///   takes the inbox with it, and a notification for nobody is nothing.
+/// - `resource` cascades. A notification about a resource that no longer exists
+///   has no referent and nowhere to link — the same reasoning as `Comment`'s
+///   own `resourceId`.
+/// - `actor` is `SetNull`. Somebody's remark outlives them here the same way it
+///   does in the thread: the read renders "Someone" rather than dropping news
+///   the recipient is still owed.
+/// - `comment` is `SetNull`. A reply notification whose comment was removed is
+///   still news that somebody answered — the read falls back to the resource.
+///
+/// `readAt`, not a boolean: "unread" is the null state and reading stamps it,
+/// which is what makes "mark all read" one `updateMany`.
+model Notification {
+  id        String           @id @default(cuid())
+  type      NotificationType
+  createdAt DateTime         @default(now())
+  readAt    DateTime?
+
+  /// Who should hear about it. Never null and never the actor: nobody is
+  /// notified about their own comment, so a row where these coincide is a bug.
+  recipientId String
+  recipient   User   @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+
+  /// Who did it. Nullable for the deleted-account path above — never for
+  /// anonymity, because comments have no anonymous option.
+  actorId String?
+  actor   User?   @relation("NotificationActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  /// Where it happened. Required: without a resource there is nowhere to link.
+  resourceId String
+  resource   Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+  /// What was said. Nullable per the deleted-comment path above.
+  commentId String?
+  comment   Comment? @relation(fields: [commentId], references: [id], onDelete: SetNull)
+
+  // Serves the inbox, `WHERE recipient_id = ? ORDER BY created_at DESC,
+  // id DESC`, keyset-paginated like every other list here. The `id` tiebreaker
+  // is load-bearing for the usual reason: `createdAt` is not unique.
+  @@index([recipientId, createdAt(sort: Desc), id(sort: Desc)])
 }
 
 /// Why somebody flagged a resource.
