@@ -26,10 +26,7 @@ import { PrismaService } from '../prisma/prisma.service';
  * implementation.
  */
 function isPublicOn(method: keyof CommentsController): unknown {
-  return Reflect.getMetadata(
-    IS_PUBLIC_KEY,
-    CommentsController.prototype[method],
-  );
+  return metadataOn(method, IS_PUBLIC_KEY);
 }
 
 /**
