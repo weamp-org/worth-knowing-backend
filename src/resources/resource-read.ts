@@ -158,9 +158,7 @@ export type ResourceWithRelations = Prisma.ResourceGetPayload<{
 
 /** The contributor fields that never reach the response. */
 type DerivedContributorFields =
-  | 'username'
-  | 'usernameLower'
-  | 'isProfilePrivate';
+  'username' | 'usernameLower' | 'isProfilePrivate';
 
 /**
  * A resource as it is returned, once redaction and `profilePath` are applied.
